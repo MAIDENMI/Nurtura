@@ -1,0 +1,11 @@
+# Core dependencies for infant breathing monitor
+# Updated for Python 3.13 compatibility
+opencv-python>=4.8.0
+numpy>=1.26.0
+mediapipe>=0.10.0
+matplotlib>=3.5.0
+scipy>=1.9.0
+
+# Optional: For headless Raspberry Pi (use opencv-python-headless instead)
+# opencv-python-headless>=4.8.0
+
