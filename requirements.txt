@@ -20,3 +20,6 @@ livekit-plugins-silero>=1.0.0
 livekit-plugins-openai>=1.0.0
 python-dotenv>=1.0.0
 
+# Snowflake connector for database storage
+snowflake-connector-python>=3.0.0
+
