@@ -494,8 +494,14 @@ class BreathingMonitorResearch:
             if signal_std < 1e-6:
                 continue
             
-            # Balanced prominence - not too sensitive, not too conservative
-            prominence = signal_std * 0.25
+            # Adjusted prominence based on detected age category
+            # Infants need MORE sensitive detection (smaller movements)
+            if self.age_category == 'infant':
+                prominence = signal_std * 0.15  # 40% more sensitive
+            elif self.age_category == 'child':
+                prominence = signal_std * 0.20  # 20% more sensitive
+            else:
+                prominence = signal_std * 0.25  # Normal for adults
             
             peaks, properties = find_peaks(
                 combined_signal,
@@ -504,19 +510,29 @@ class BreathingMonitorResearch:
             )
             
             # Calculate breathing rate for this region
-            if len(peaks) >= 2:
+            confidence_multiplier = 1.0
+            
+            if len(peaks) >= 3:  # PREFERRED: 3+ peaks (more reliable)
                 time_duration = len(combined_signal) / self.fps
                 breathing_rate = (len(peaks) / time_duration) * 60
-                
-                # Sanity check
                 breathing_rate = max(8, min(breathing_rate, 70))
+                confidence_multiplier = 1.0  # Full confidence
                 
-                # Calculate confidence based on signal quality
-                confidence = min(100, (signal_std * 2000 + len(peaks) * 10))
-                confidence = max(0, min(confidence, 100))
+            elif len(peaks) == 2:  # ACCEPTABLE: 2 peaks (less reliable)
+                time_duration = len(combined_signal) / self.fps
+                breathing_rate = (len(peaks) / time_duration) * 60
+                breathing_rate = max(8, min(breathing_rate, 70))
+                confidence_multiplier = 0.5  # 50% confidence penalty for 2-peak measurements
                 
-                all_breathing_rates.append(breathing_rate)
-                all_confidences.append(confidence)
+            else:
+                continue  # Skip if less than 2 peaks
+            
+            # Calculate confidence based on signal quality
+            confidence = min(100, (signal_std * 2000 + len(peaks) * 10) * confidence_multiplier)
+            confidence = max(0, min(confidence, 100))
+            
+            all_breathing_rates.append(breathing_rate)
+            all_confidences.append(confidence)
         
         # Combine results from all regions (weighted by confidence)
         if len(all_breathing_rates) == 0:
