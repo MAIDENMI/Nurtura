@@ -103,8 +103,17 @@ BR Conf: 78%  |  HR Conf: 65%   [Quality indicators]
 
 ## 📖 Documentation
 
+### 🌟 Start Here
+- [**HOW_IT_WORKS.md**](HOW_IT_WORKS.md) - **Complete explanation of how breathing & heart rate detection works** ⭐
+- [**ACCURACY_FAQ.md**](ACCURACY_FAQ.md) - **Detailed accuracy info, validation, when to trust readings** ⭐
+
+### Technical Details
+- [**RPPG_HEART_RATE.md**](RPPG_HEART_RATE.md) - Heart rate detection method (rPPG)
+- [**ENHANCED_TRACKING.md**](ENHANCED_TRACKING.md) - Body tracking improvements
+- [**AGE_DETECTION.md**](AGE_DETECTION.md) - Age classification system
+
+### Getting Started
 - [**QUICKSTART.md**](QUICKSTART.md) - Step-by-step guide for beginners
-- [**RPPG_HEART_RATE.md**](RPPG_HEART_RATE.md) - Detailed explanation of heart rate detection
 - [**INSTALL.md**](INSTALL.md) - Installation troubleshooting
 - [**TEST_WITH_VIDEO.md**](TEST_WITH_VIDEO.md) - Testing with video files
 - [**VERSION_COMPARISON.md**](VERSION_COMPARISON.md) - Compare different monitor versions

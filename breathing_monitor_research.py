@@ -380,7 +380,7 @@ class BreathingMonitorResearch:
                 'br_low': 25,
                 'br_high': 70,
                 'br_normal': (30, 60),
-                'label': 'Infant (0-2yr)'
+                'label': 'Infant'
             },
             'child': {
                 'hr_low': 70,
@@ -389,7 +389,7 @@ class BreathingMonitorResearch:
                 'br_low': 18,
                 'br_high': 45,
                 'br_normal': (20, 35),
-                'label': 'Child (2-12yr)'
+                'label': 'Child'
             },
             'adult': {
                 'hr_low': 50,
@@ -398,7 +398,7 @@ class BreathingMonitorResearch:
                 'br_low': 10,
                 'br_high': 25,
                 'br_normal': (12, 20),
-                'label': 'Adult (13+yr)'
+                'label': 'Adult'
             }
         }
         
@@ -455,9 +455,12 @@ class BreathingMonitorResearch:
         }
     
     def estimate_breathing_rate(self):
-        """Estimate breathing rate using research-validated method with multiple sources"""
-        # Need at least 3 seconds of data
-        min_frames = int(self.window_size * 0.5)
+        """
+        Estimate breathing rate using research-validated method with multiple sources.
+        ENHANCED: Better accuracy for live monitoring with improved sensitivity.
+        """
+        # Need at least 2.5 seconds of data (reduced from 3 for faster response)
+        min_frames = int(self.window_size * 0.4)  # More responsive
         if len(self.signal_history['chest']['G']) < min_frames:
             return 0, 0
         
@@ -465,18 +468,21 @@ class BreathingMonitorResearch:
         all_confidences = []
         
         # Try multiple regions: chest, abdomen, and nose
+        # ENHANCED: Use all three regions with different weightings
         for region in ['chest', 'abdomen', 'nose']:
             region_signals = []
             for channel in ['B', 'G', 'R']:
                 sig = np.array(list(self.signal_history[region][channel]))
                 if len(sig) > min_frames:
-                    # Apply bandpass filter for respiratory frequencies
-                    # 0.12-0.75 Hz = 7-45 breaths/min (good range for adults at rest)
+                    # ENHANCED: Wider frequency range for better detection
+                    # 0.1-1.0 Hz = 6-60 breaths/min (covers all age ranges better)
                     try:
-                        filtered = apply_bandpass_filter(sig, 0.12, 0.75, self.fps, order=4)
+                        filtered = apply_bandpass_filter(sig, 0.1, 1.0, self.fps, order=3)
                         region_signals.append(filtered)
                     except:
-                        region_signals.append(sig - np.mean(sig))
+                        # Fallback: simple detrending
+                        detrended = sig - np.mean(sig)
+                        region_signals.append(detrended)
             
             if len(region_signals) == 0:
                 continue
@@ -485,54 +491,98 @@ class BreathingMonitorResearch:
             combined_signal = np.mean(region_signals, axis=0)
             
             # Find peaks in the filtered signal
-            # Minimum distance between breaths: ~0.6 seconds (balanced responsiveness)
-            # Allows detection up to 100 BPM max
-            min_distance = int(self.fps * 0.6)
+            # ENHANCED: More responsive distance threshold
+            # Min distance: 0.5 seconds (allows up to 120 breaths/min detection)
+            min_distance = int(self.fps * 0.5)
             
-            # Dynamic threshold
+            # Dynamic threshold with better normalization
             signal_std = np.std(combined_signal)
+            signal_mean_abs = np.mean(np.abs(combined_signal))
+            
             if signal_std < 1e-6:
                 continue
             
-            # Adjusted prominence based on detected age category
-            # Infants need MORE sensitive detection (smaller movements)
+            # ENHANCED: More sensitive prominence based on age category
+            # Lower prominence = more sensitive detection
             if self.age_category == 'infant':
-                prominence = signal_std * 0.15  # 40% more sensitive
+                # Infants: VERY sensitive (60% more than before)
+                prominence = signal_std * 0.10
+                min_height = signal_mean_abs * 0.1  # Very low threshold
             elif self.age_category == 'child':
-                prominence = signal_std * 0.20  # 20% more sensitive
+                # Children: Moderately sensitive (40% more than before)
+                prominence = signal_std * 0.15
+                min_height = signal_mean_abs * 0.15
             else:
-                prominence = signal_std * 0.25  # Normal for adults
+                # Adults: Normal sensitivity
+                prominence = signal_std * 0.20
+                min_height = signal_mean_abs * 0.2
             
+            # ENHANCED: Multiple peak detection attempts for better accuracy
             peaks, properties = find_peaks(
                 combined_signal,
                 distance=min_distance,
-                prominence=prominence
+                prominence=prominence,
+                height=min_height  # Additional height threshold
             )
             
-            # Calculate breathing rate for this region
-            confidence_multiplier = 1.0
+            # If too few peaks detected, try with more sensitive settings
+            if len(peaks) < 3:
+                peaks_retry, _ = find_peaks(
+                    combined_signal,
+                    distance=int(min_distance * 0.8),  # 20% closer
+                    prominence=prominence * 0.7,  # 30% more sensitive
+                    height=min_height * 0.5  # 50% lower threshold
+                )
+                # Use retry if it found more peaks
+                if len(peaks_retry) > len(peaks):
+                    peaks = peaks_retry
             
-            if len(peaks) >= 3:  # PREFERRED: 3+ peaks (more reliable)
+            # Calculate breathing rate for this region
+            # ENHANCED: Better confidence scoring based on peak quality
+            confidence_multiplier = 1.0
+            peak_quality = 1.0
+            
+            if len(peaks) >= 4:  # EXCELLENT: 4+ peaks (very reliable)
                 time_duration = len(combined_signal) / self.fps
                 breathing_rate = (len(peaks) / time_duration) * 60
-                breathing_rate = max(8, min(breathing_rate, 70))
-                confidence_multiplier = 1.0  # Full confidence
+                breathing_rate = max(8, min(breathing_rate, 80))  # Slightly wider range
+                confidence_multiplier = 1.2  # Bonus confidence
+                peak_quality = 1.0
                 
-            elif len(peaks) == 2:  # ACCEPTABLE: 2 peaks (less reliable)
+            elif len(peaks) == 3:  # GOOD: 3 peaks (reliable)
                 time_duration = len(combined_signal) / self.fps
                 breathing_rate = (len(peaks) / time_duration) * 60
-                breathing_rate = max(8, min(breathing_rate, 70))
-                confidence_multiplier = 0.5  # 50% confidence penalty for 2-peak measurements
+                breathing_rate = max(8, min(breathing_rate, 80))
+                confidence_multiplier = 1.0  # Full confidence
+                peak_quality = 0.9
+                
+            elif len(peaks) == 2:  # ACCEPTABLE: 2 peaks (use with caution)
+                time_duration = len(combined_signal) / self.fps
+                breathing_rate = (len(peaks) / time_duration) * 60
+                breathing_rate = max(8, min(breathing_rate, 80))
+                confidence_multiplier = 0.6  # Moderate confidence (improved from 0.5)
+                peak_quality = 0.7
                 
             else:
                 continue  # Skip if less than 2 peaks
             
-            # Calculate confidence based on signal quality
-            confidence = min(100, (signal_std * 2000 + len(peaks) * 10) * confidence_multiplier)
+            # ENHANCED: Better confidence calculation
+            # Consider: signal strength, peak count, peak regularity
+            peak_regularity = 1.0
+            if len(peaks) > 1:
+                peak_intervals = np.diff(peaks)
+                peak_regularity = 1.0 - min(np.std(peak_intervals) / (np.mean(peak_intervals) + 1), 0.5)
+            
+            base_confidence = (signal_std * 1500 + len(peaks) * 15 + peak_regularity * 20)
+            confidence = min(100, base_confidence * confidence_multiplier * peak_quality)
             confidence = max(0, min(confidence, 100))
             
+            # Weight this region's contribution based on visibility/quality
+            region_weight = self.landmark_quality.get(region, 0.5)
+            weighted_confidence = confidence * region_weight
+            
             all_breathing_rates.append(breathing_rate)
-            all_confidences.append(confidence)
+            all_confidences.append(weighted_confidence)
         
         # Combine results from all regions (weighted by confidence)
         if len(all_breathing_rates) == 0:
@@ -548,9 +598,19 @@ class BreathingMonitorResearch:
             weighted_rate = np.mean(all_breathing_rates)
             avg_confidence = 20
         
-        # Smooth with previous reading (more responsive)
+        # ENHANCED: Adaptive smoothing based on confidence
+        # High confidence = trust new reading more
+        # Low confidence = stick with previous reading
         if self.breathing_rate > 0:
-            weighted_rate = 0.3 * self.breathing_rate + 0.7 * weighted_rate
+            if avg_confidence > 70:
+                # High confidence: 80% new, 20% old (very responsive)
+                weighted_rate = 0.2 * self.breathing_rate + 0.8 * weighted_rate
+            elif avg_confidence > 40:
+                # Medium confidence: 60% new, 40% old (balanced)
+                weighted_rate = 0.4 * self.breathing_rate + 0.6 * weighted_rate
+            else:
+                # Low confidence: 30% new, 70% old (conservative)
+                weighted_rate = 0.7 * self.breathing_rate + 0.3 * weighted_rate
         
         return weighted_rate, avg_confidence
     
@@ -796,14 +856,8 @@ class BreathingMonitorResearch:
         self.heart_rate_history.append(self.heart_rate)
         self.time_history.append(current_time)
         
-        # Get age-appropriate normal ranges
+        # Get age-appropriate normal ranges (used for thresholds, not displayed)
         ranges = self.get_normal_ranges()
-        
-        # Display AGE CATEGORY (NEW)
-        age_text = f"{ranges['label']} | Est: {self.body_size_cm:.0f}cm"
-        age_color = (255, 165, 0) if self.age_category == 'infant' else ((255, 200, 0) if self.age_category == 'child' else (200, 200, 200))
-        cv2.putText(frame, age_text, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, age_color, 2)
         
         # Display breathing rate with AGE-APPROPRIATE thresholds
         status_text = "NORMAL"
@@ -818,9 +872,9 @@ class BreathingMonitorResearch:
         
         rate_text = f"Breathing: {self.breathing_rate:.1f} BPM -- {status_text}"
         normal_range = f"(Normal: {ranges['br_normal'][0]}-{ranges['br_normal'][1]})"
-        cv2.putText(frame, rate_text, (10, 65),
+        cv2.putText(frame, rate_text, (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
-        cv2.putText(frame, normal_range, (10, 90),
+        cv2.putText(frame, normal_range, (10, 55),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
         # Display heart rate with AGE-APPROPRIATE thresholds
@@ -836,14 +890,14 @@ class BreathingMonitorResearch:
         
         hr_text = f"Heart Rate: {self.heart_rate:.0f} BPM -- {hr_status}"
         hr_normal_range = f"(Normal: {ranges['hr_normal'][0]}-{ranges['hr_normal'][1]})"
-        cv2.putText(frame, hr_text, (10, 120),
+        cv2.putText(frame, hr_text, (10, 85),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, hr_color, 2)
-        cv2.putText(frame, hr_normal_range, (10, 145),
+        cv2.putText(frame, hr_normal_range, (10, 110),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
         # Display confidence scores
         conf_text = f"BR Conf: {self.confidence:.0f}%  |  HR Conf: {self.hr_confidence:.0f}%"
-        cv2.putText(frame, conf_text, (10, 175),
+        cv2.putText(frame, conf_text, (10, 140),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         cv2.putText(frame, "Research: Breathing + rPPG Heart Rate | Auto Age Detection", (10, h - 20),
