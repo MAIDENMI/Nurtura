@@ -9,3 +9,14 @@ scipy>=1.9.0
 # Optional: For headless Raspberry Pi (use opencv-python-headless instead)
 # opencv-python-headless>=4.8.0
 
+# Fish Audio TTS dependencies
+requests>=2.31.0
+pygame>=2.5.0
+
+# LiveKit Agents dependencies
+livekit-agents[baseten]~=1.2
+livekit-plugins-baseten>=1.0.0
+livekit-plugins-silero>=1.0.0
+livekit-plugins-openai>=1.0.0
+python-dotenv>=1.0.0
+
