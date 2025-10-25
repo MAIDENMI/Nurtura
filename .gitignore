@@ -1,23 +1,24 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-venv/
-env/
-ENV/
-*.egg-info/
-dist/
-build/
 
-# Videos and images
-*.mp4
-*.avi
-*.mov
-*.png
-*.jpg
-*.jpeg
+# Logging and data files
+*.csv
+*.log
+breathing_data*.csv
+
+# Screenshots
+screenshot_*.jpg
+screenshot_*.png
 
 # IDE
 .vscode/
@@ -26,13 +27,19 @@ build/
 *.swo
 *~
 
-# OS
+# macOS
 .DS_Store
-Thumbs.db
 
-# Logs
-*.log
+# Jupyter
+.ipynb_checkpoints/
 
-# Test files
-screenshot_*.png
-breathing_data.csv
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
