@@ -39,19 +39,25 @@ def apply_bandpass_filter(data, lowcut, highcut, fs, order=5):
 
 
 class BreathingMonitorResearch:
-    def __init__(self, window_size=150, block_size=20):
+    def __init__(self, window_size=150, block_size=50):
         """
         Initialize research-validated breathing monitor.
         
         Args:
             window_size: Number of frames for analysis (5 seconds at 30fps)
-            block_size: Size of tracking blocks around key points
+            block_size: Size of tracking blocks around key points (increased for better capture)
         """
         self.mp_pose = mp.solutions.pose
+        self.mp_drawing = mp.solutions.drawing_utils
+        
+        # UPGRADED: Maximum accuracy pose detection
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=0,
-            min_detection_confidence=0.5
+            model_complexity=2,  # HIGHEST ACCURACY (0=lite, 1=full, 2=heavy - most accurate)
+            min_detection_confidence=0.7,  # Higher threshold for better detection
+            min_tracking_confidence=0.7,  # Better frame-to-frame tracking
+            smooth_landmarks=True,  # Smoother, more natural landmark movement
+            enable_segmentation=True  # Enable person segmentation for better isolation
         )
         
         # Key points for multi-region tracking
@@ -74,6 +80,9 @@ class BreathingMonitorResearch:
         self.fps = 30
         self.block_size = block_size
         self.window_size = window_size
+        
+        # Track landmark quality
+        self.landmark_quality = {}
         
         # For graphing
         self.breathing_rate_history = deque(maxlen=window_size)
@@ -135,36 +144,75 @@ class BreathingMonitorResearch:
         self.canvas = FigureCanvasAgg(self.fig)
         
     def initialize_tracking_points(self, landmarks, frame_shape):
-        """Initialize tracking points based on detected pose landmarks"""
+        """
+        ENHANCED: Initialize tracking points with much better accuracy.
+        Uses multiple landmarks for robust positioning and visibility checks.
+        """
         h, w = frame_shape[:2]
         
-        # Get key body landmarks
-        left_shoulder = landmarks[11]
-        right_shoulder = landmarks[12]
-        left_hip = landmarks[23]
-        right_hip = landmarks[24]
+        # Get all relevant landmarks with visibility/presence scores
+        # Core body points
+        left_shoulder = landmarks[11]  # Left shoulder
+        right_shoulder = landmarks[12]  # Right shoulder
+        left_hip = landmarks[23]  # Left hip
+        right_hip = landmarks[24]  # Right hip
         
-        # Get nose landmark for breathing detection
-        nose = landmarks[0]
+        # Additional torso landmarks for better chest tracking
+        left_elbow = landmarks[13]  # Left elbow
+        right_elbow = landmarks[15]  # Right elbow
         
-        # Calculate center points for different body regions
-        # Chest center - more precise positioning for torso breathing
-        # Position between shoulders and mid-torso (where maximum chest expansion occurs)
-        chest_x = int((left_shoulder.x + right_shoulder.x) / 2 * w)
-        chest_y = int(((left_shoulder.y + right_shoulder.y) / 2 + (left_hip.y + right_hip.y) / 2) / 2 * h)
+        # Facial landmarks
+        nose = landmarks[0]  # Nose tip
+        mouth_left = landmarks[9]  # Left mouth
+        mouth_right = landmarks[10]  # Right mouth
         
-        # Abdomen center - lower chest area where diaphragm movement is visible
-        abdomen_x = int((left_hip.x + right_hip.x) / 2 * w)
-        abdomen_y = int(((left_shoulder.y + right_shoulder.y) / 2 + (left_hip.y + right_hip.y) / 2) / 2 * h + 50)
+        # === ENHANCED CHEST TRACKING ===
+        # Use weighted average of multiple landmarks for more stable chest center
+        # This captures the actual center of mass of the torso
+        shoulder_mid_x = (left_shoulder.x + right_shoulder.x) / 2
+        shoulder_mid_y = (left_shoulder.y + right_shoulder.y) / 2
+        hip_mid_x = (left_hip.x + right_hip.x) / 2
+        hip_mid_y = (left_hip.y + right_hip.y) / 2
         
-        # Nose area for nostril airflow detection
-        nose_x = int(nose.x * w)
-        nose_y = int(nose.y * h + 15)  # Below nose for nostril area
+        # Chest is positioned at upper-mid torso (60% from shoulders, 40% from hips)
+        # This is where maximum respiratory expansion occurs
+        chest_x = int((shoulder_mid_x * 0.5 + hip_mid_x * 0.5) * w)
+        chest_y = int((shoulder_mid_y * 0.6 + hip_mid_y * 0.4) * h)
         
-        # Control point (shoulder area - less movement)
-        control_x = int(left_shoulder.x * w - 50)
-        control_y = int(left_shoulder.y * h)
+        chest_visibility = (left_shoulder.visibility + right_shoulder.visibility) / 2
         
+        # === ENHANCED ABDOMEN TRACKING ===
+        # Position at lower torso (diaphragm area) for abdominal breathing
+        # 30% shoulders, 70% hips - captures diaphragmatic movement
+        abdomen_x = int((shoulder_mid_x * 0.3 + hip_mid_x * 0.7) * w)
+        abdomen_y = int((shoulder_mid_y * 0.3 + hip_mid_y * 0.7) * h)
+        
+        abdomen_visibility = (left_hip.visibility + right_hip.visibility) / 2
+        
+        # === ENHANCED NOSE/FACE TRACKING ===
+        # Use nose with fallback to mouth center if nose not visible
+        if nose.visibility > 0.5:
+            nose_x = int(nose.x * w)
+            nose_y = int(nose.y * h)
+            nose_visibility = nose.visibility
+        else:
+            # Fallback: estimate from mouth center
+            nose_x = int((mouth_left.x + mouth_right.x) / 2 * w)
+            nose_y = int((mouth_left.y + mouth_right.y) / 2 * h - 20)
+            nose_visibility = (mouth_left.visibility + mouth_right.visibility) / 2
+        
+        # === ENHANCED CONTROL POINT ===
+        # Place control point to the side, at mid-torso height
+        # Uses shoulder width to adaptively position it
+        shoulder_width = abs(right_shoulder.x - left_shoulder.x) * w
+        
+        # Place control point outside body (1.2x shoulder width from center)
+        control_offset = shoulder_width * 0.6
+        control_x = int(shoulder_mid_x * w + control_offset)
+        control_x = max(30, min(control_x, w - 30))  # Keep within frame with margin
+        control_y = int((shoulder_mid_y + hip_mid_y) / 2 * h)  # Mid-torso height
+        
+        # Store tracking points
         self.tracking_points = {
             'chest': (chest_x, chest_y),
             'abdomen': (abdomen_x, abdomen_y),
@@ -172,15 +220,39 @@ class BreathingMonitorResearch:
             'control': (control_x, control_y)
         }
         
+        # Store landmark quality for confidence weighting
+        self.landmark_quality = {
+            'chest': chest_visibility,
+            'abdomen': abdomen_visibility,
+            'nose': nose_visibility,
+            'control': 1.0
+        }
+        
+        # Calculate adaptive block size based on body size
+        # Larger people need larger blocks, smaller people need smaller blocks
+        torso_height = abs((shoulder_mid_y - hip_mid_y) * h)
+        shoulder_distance = abs((right_shoulder.x - left_shoulder.x) * w)
+        
+        # Adaptive block size (20-80 pixels based on body size)
+        self.adaptive_block_size = int(np.clip(min(torso_height, shoulder_distance) * 0.25, 30, 80))
+        
         self.points_initialized = True
         
     def extract_region_signal(self, frame, center_point):
-        """Extract BGR signal from a region around a point"""
+        """
+        ENHANCED: Extract BGR signal with noise reduction and quality assessment.
+        Uses adaptive block sizing and robust statistical methods.
+        """
         x, y = center_point
-        half_block = self.block_size // 2
         h, w = frame.shape[:2]
         
-        # Ensure we stay within frame boundaries
+        # Use adaptive block size if available, otherwise use default
+        if hasattr(self, 'adaptive_block_size'):
+            half_block = self.adaptive_block_size // 2
+        else:
+            half_block = self.block_size // 2
+        
+        # Ensure we stay within frame boundaries with safety margin
         y_start = max(y - half_block, 0)
         y_end = min(y + half_block, h)
         x_start = max(x - half_block, 0)
@@ -189,15 +261,32 @@ class BreathingMonitorResearch:
         # Extract region
         region = frame[y_start:y_end, x_start:x_end]
         
-        if region.size == 0:
+        # Validate region size
+        if region.size == 0 or region.shape[0] < 10 or region.shape[1] < 10:
             return None
         
-        # Calculate mean BGR values for this region
-        b_mean = np.mean(region[:, :, 0])
-        g_mean = np.mean(region[:, :, 1])
-        r_mean = np.mean(region[:, :, 2])
+        # ENHANCED: Apply gentle Gaussian blur to reduce camera noise
+        # This helps rPPG signal quality significantly
+        region_smoothed = cv2.GaussianBlur(region, (5, 5), 0)
         
-        return {'B': b_mean, 'G': g_mean, 'R': r_mean}
+        # ENHANCED: Use median instead of mean for more robust signal
+        # Median is less affected by outliers (bright spots, shadows, etc.)
+        b_value = np.median(region_smoothed[:, :, 0])
+        g_value = np.median(region_smoothed[:, :, 1])
+        r_value = np.median(region_smoothed[:, :, 2])
+        
+        # Calculate signal quality metrics
+        # Higher standard deviation = more texture = better signal quality
+        signal_quality = (np.std(region[:, :, 0]) + 
+                         np.std(region[:, :, 1]) + 
+                         np.std(region[:, :, 2])) / 3
+        
+        return {
+            'B': b_value, 
+            'G': g_value, 
+            'R': r_value,
+            'quality': signal_quality
+        }
     
     def estimate_breathing_rate(self):
         """Estimate breathing rate using research-validated method with multiple sources"""
@@ -450,6 +539,17 @@ class BreathingMonitorResearch:
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
             
+            # ENHANCED: Draw full pose skeleton for visualization
+            self.mp_drawing.draw_landmarks(
+                frame,
+                results.pose_landmarks,
+                self.mp_pose.POSE_CONNECTIONS,
+                landmark_drawing_spec=self.mp_drawing.DrawingSpec(
+                    color=(0, 255, 0), thickness=2, circle_radius=2),
+                connection_drawing_spec=self.mp_drawing.DrawingSpec(
+                    color=(255, 255, 255), thickness=2)
+            )
+            
             # Update tracking points every frame to follow movement
             self.initialize_tracking_points(landmarks, frame.shape)
             
@@ -460,26 +560,48 @@ class BreathingMonitorResearch:
                     for channel in ['B', 'G', 'R']:
                         self.signal_history[region_name][channel].append(signals[channel])
                 
-                # Draw tracking points with better visualization
-                # Different colors for each region
+                # ENHANCED: Draw tracking points with better visualization
+                # Different colors for each region with quality indicators
                 if region_name == 'chest':
                     color = (0, 0, 255)  # Red for chest
                 elif region_name == 'abdomen':
                     color = (0, 255, 0)  # Green for abdomen
                 elif region_name == 'nose':
-                    color = (255, 255, 0)  # Cyan for nose
+                    color = (255, 255, 0)  # Cyan for nose (heart rate!)
                 else:
                     color = (128, 128, 128)  # Gray for control
                 
-                # Draw circle and label
-                cv2.circle(frame, point, 7, color, -1)
-                cv2.circle(frame, point, self.block_size//2, color, 2)
+                # Get block size (adaptive if available)
+                if hasattr(self, 'adaptive_block_size'):
+                    block_radius = self.adaptive_block_size // 2
+                else:
+                    block_radius = self.block_size // 2
                 
-                # Label with background for better visibility
+                # Draw larger region box (shows capture area)
+                cv2.rectangle(frame, 
+                             (point[0] - block_radius, point[1] - block_radius),
+                             (point[0] + block_radius, point[1] + block_radius),
+                             color, 2)
+                
+                # Draw center point
+                cv2.circle(frame, point, 5, color, -1)
+                cv2.circle(frame, point, 8, (255, 255, 255), 2)  # White outline
+                
+                # Label with quality indicator
                 label = region_name.upper()
+                if region_name in self.landmark_quality:
+                    quality = self.landmark_quality[region_name]
+                    label += f" ({quality:.0%})"
+                
+                # Label with semi-transparent background
+                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
                 label_pos = (point[0] + 15, point[1] + 5)
+                cv2.rectangle(frame,
+                             (label_pos[0] - 2, label_pos[1] - label_size[1] - 2),
+                             (label_pos[0] + label_size[0] + 2, label_pos[1] + 2),
+                             (0, 0, 0), -1)
                 cv2.putText(frame, label, label_pos, 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
             # Estimate breathing rate
             self.breathing_rate, self.confidence = self.estimate_breathing_rate()
