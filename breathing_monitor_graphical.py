@@ -12,16 +12,18 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import threading
+from scipy import signal
+from scipy.signal import find_peaks
 
 
 class BreathingMonitorGraphical:
-    def __init__(self, window_size=60, breathing_threshold=0.02):
+    def __init__(self, window_size=75, breathing_threshold=0.03):
         """
         Initialize breathing monitor with graphical display.
         
         Args:
-            window_size: Number of frames for moving average
-            breathing_threshold: Sensitivity for motion detection
+            window_size: Number of frames for moving average (increased for better accuracy)
+            breathing_threshold: Sensitivity for motion detection (increased to reduce false positives)
         """
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
@@ -129,24 +131,71 @@ class BreathingMonitorGraphical:
             return 0
     
     def estimate_breathing_rate(self):
-        """Estimate breathing rate from motion history"""
-        if len(self.motion_history) < 10:
+        """Estimate breathing rate from motion history with improved signal processing"""
+        if len(self.motion_history) < 30:
             return 0
         
         motion_array = np.array(list(self.motion_history))
         
-        peaks = 0
-        for i in range(1, len(motion_array) - 1):
-            if (motion_array[i] > motion_array[i-1] and 
-                motion_array[i] > motion_array[i+1] and
-                motion_array[i] > self.breathing_threshold):
-                peaks += 1
+        # Step 1: Smooth the signal with moving average to remove noise
+        window_size = 5
+        if len(motion_array) >= window_size:
+            motion_smoothed = np.convolve(motion_array, np.ones(window_size)/window_size, mode='valid')
+        else:
+            motion_smoothed = motion_array
         
+        # Step 2: Apply bandpass filter for typical breathing frequencies
+        # Normal breathing: 0.2-0.8 Hz (12-48 breaths/min)
+        # Infant breathing: 0.33-1.0 Hz (20-60 breaths/min)
+        try:
+            nyquist = self.fps / 2
+            low_freq = 0.15 / nyquist  # 9 breaths/min
+            high_freq = 1.2 / nyquist  # 72 breaths/min
+            
+            if len(motion_smoothed) > 20:
+                sos = signal.butter(2, [low_freq, high_freq], btype='band', output='sos')
+                motion_filtered = signal.sosfilt(sos, motion_smoothed)
+            else:
+                motion_filtered = motion_smoothed
+        except:
+            motion_filtered = motion_smoothed
+        
+        # Step 3: Find peaks with minimum distance and prominence
+        # Minimum distance between breaths: ~1 second (fps frames)
+        min_distance = int(self.fps * 0.6)  # At least 0.6 seconds between breaths (more responsive)
+        
+        # Dynamic threshold based on signal strength
+        signal_std = np.std(motion_filtered)
+        signal_mean = np.mean(motion_filtered)
+        
+        # Lower prominence for more sensitivity
+        prominence = max(signal_std * 0.3, self.breathing_threshold * 0.5)
+        
+        peaks, properties = find_peaks(
+            motion_filtered, 
+            distance=min_distance,
+            prominence=prominence
+        )
+        
+        # Step 4: Calculate breathing rate
+        if len(peaks) < 1:
+            # If no peaks, return a small value instead of keeping old rate
+            return max(5, self.breathing_rate * 0.9) if hasattr(self, 'breathing_rate') else 0
+        
+        # Use the number of peaks over the time window
         frames_duration = len(self.motion_history) / self.fps
-        breaths = peaks / 2
-        breathing_rate = (breaths / frames_duration) * 60
+        breaths_per_second = len(peaks) / frames_duration
+        breathing_rate = breaths_per_second * 60
         
-        return max(0, min(breathing_rate, 100))  # Cap at 100
+        # Step 5: Sanity check - cap at reasonable values
+        breathing_rate = max(5, min(breathing_rate, 80))
+        
+        # Step 6: Smooth the breathing rate itself (more responsive now)
+        if hasattr(self, 'breathing_rate') and self.breathing_rate > 0:
+            # More responsive: 50/50 blend instead of 70/30
+            breathing_rate = 0.5 * self.breathing_rate + 0.5 * breathing_rate
+        
+        return breathing_rate
     
     def update_plot(self):
         """Update the matplotlib plot with current data"""

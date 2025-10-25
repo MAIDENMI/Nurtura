@@ -54,6 +54,11 @@ class BreathingMonitor:
         y_max = min(h, y_max + padding)
         
         torso = frame[y_min:y_max, x_min:x_max]
+        
+        # Validate torso is not empty
+        if torso.size == 0 or torso.shape[0] == 0 or torso.shape[1] == 0:
+            return None, None
+            
         return torso, (x_min, y_min, x_max, y_max)
     
     def measure_motion(self, torso_prev, torso_curr):
@@ -61,7 +66,11 @@ class BreathingMonitor:
         Measure motion between consecutive torso frames.
         Uses optical flow magnitude as breathing indicator.
         """
-        if torso_prev is None:
+        if torso_prev is None or torso_curr is None:
+            return 0
+        
+        # Check if torso regions are valid (not empty)
+        if torso_prev.size == 0 or torso_curr.size == 0:
             return 0
         
         # Resize for consistency
@@ -128,6 +137,10 @@ class BreathingMonitor:
         
         # Extract torso
         torso, bbox = self.extract_torso(frame, landmarks)
+        
+        # Skip if torso extraction failed
+        if torso is None or bbox is None:
+            return frame, None
         
         # Measure motion
         if not hasattr(self, 'torso_prev'):
