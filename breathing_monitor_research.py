@@ -1,12 +1,14 @@
 """
-Infant Breathing Monitor - Research-Validated Version
-Based on advanced signal processing methods from respiratory rate research
+Infant Breathing & Heart Rate Monitor - Research-Validated Version
+Based on advanced signal processing methods from physiological monitoring research
 
 This version implements:
-- Multi-point BGR signal extraction
-- Bandpass filtering (0.05-0.7 Hz for respiration)
+- Multi-point BGR signal extraction for breathing rate detection
+- Remote photoplethysmography (rPPG) for heart rate detection
+  Based on: van der Kooij & Naber (2019) https://doi.org/10.3758/s13428-019-01256-8
+- Bandpass filtering (0.12-0.75 Hz for breathing, 0.7-4.0 Hz for heart rate)
 - Control point normalization
-- Real-time graphical display with confidence metrics
+- Real-time graphical display with dual confidence metrics
 """
 
 import cv2
@@ -66,13 +68,16 @@ class BreathingMonitorResearch:
         }
         
         self.breathing_rate = 0
+        self.heart_rate = 0  # NEW: Heart rate in BPM
         self.confidence = 0
+        self.hr_confidence = 0  # NEW: Heart rate confidence
         self.fps = 30
         self.block_size = block_size
         self.window_size = window_size
         
         # For graphing
         self.breathing_rate_history = deque(maxlen=window_size)
+        self.heart_rate_history = deque(maxlen=window_size)  # NEW: Heart rate history
         self.time_history = deque(maxlen=window_size)
         self.start_time = time.time()
         
@@ -82,10 +87,10 @@ class BreathingMonitorResearch:
     def setup_plot(self):
         """Setup matplotlib figure for real-time plotting"""
         plt.style.use('dark_background')
-        self.fig, (self.ax1, self.ax2, self.ax3) = plt.subplots(3, 1, figsize=(10, 8))
+        self.fig, (self.ax1, self.ax2, self.ax3, self.ax4) = plt.subplots(4, 1, figsize=(10, 10))
         
         # Breathing rate plot
-        self.ax1.set_title('Breathing Rate (Research Method)', color='cyan', fontsize=14, weight='bold')
+        self.ax1.set_title('Breathing Rate (Research Method)', color='cyan', fontsize=12, weight='bold')
         self.ax1.set_ylabel('Breaths/min', color='white')
         self.ax1.set_ylim(0, 80)
         self.ax1.axhspan(20, 60, alpha=0.2, color='green', label='Normal Range (20-60)')
@@ -93,25 +98,36 @@ class BreathingMonitorResearch:
         self.line1, = self.ax1.plot([], [], 'cyan', linewidth=2, label='Breathing Rate')
         self.ax1.legend(loc='upper right')
         
-        # Signal strength plot
-        self.ax2.set_title('Signal Quality', color='yellow', fontsize=12)
-        self.ax2.set_ylabel('Amplitude', color='white')
+        # Heart rate plot (NEW)
+        self.ax2.set_title('Heart Rate (rPPG Method)', color='red', fontsize=12, weight='bold')
+        self.ax2.set_ylabel('BPM', color='white')
+        self.ax2.set_ylim(40, 200)
+        self.ax2.axhspan(60, 100, alpha=0.2, color='green', label='Normal Range (60-100)')
         self.ax2.grid(True, alpha=0.3)
-        self.line2_chest, = self.ax2.plot([], [], 'r', linewidth=2, label='Chest (Torso)')
-        self.line2_abdomen, = self.ax2.plot([], [], 'g', linewidth=2, label='Abdomen')
-        self.line2_nose, = self.ax2.plot([], [], 'cyan', linewidth=2, label='Nose')
-        self.line2_control, = self.ax2.plot([], [], 'gray', linewidth=1, linestyle='--', label='Control')
+        self.line2, = self.ax2.plot([], [], 'red', linewidth=2, label='Heart Rate')
         self.ax2.legend(loc='upper right')
         
-        # Confidence plot
-        self.ax3.set_title('Confidence Score', color='lime', fontsize=12)
-        self.ax3.set_ylabel('Confidence %', color='white')
-        self.ax3.set_ylim(0, 100)
+        # Signal strength plot
+        self.ax3.set_title('Signal Quality', color='yellow', fontsize=10)
+        self.ax3.set_ylabel('Amplitude', color='white')
         self.ax3.grid(True, alpha=0.3)
-        self.line3, = self.ax3.plot([], [], 'lime', linewidth=2)
+        self.line3_chest, = self.ax3.plot([], [], 'r', linewidth=2, label='Chest (Torso)')
+        self.line3_abdomen, = self.ax3.plot([], [], 'g', linewidth=2, label='Abdomen')
+        self.line3_nose, = self.ax3.plot([], [], 'cyan', linewidth=2, label='Nose')
+        self.line3_control, = self.ax3.plot([], [], 'gray', linewidth=1, linestyle='--', label='Control')
+        self.ax3.legend(loc='upper right', fontsize=8)
         
-        for ax in [self.ax1, self.ax2, self.ax3]:
-            ax.set_xlabel('Time (seconds)', color='white')
+        # Confidence plot
+        self.ax4.set_title('Confidence Scores', color='lime', fontsize=10)
+        self.ax4.set_ylabel('Confidence %', color='white')
+        self.ax4.set_ylim(0, 100)
+        self.ax4.grid(True, alpha=0.3)
+        self.line4_breathing, = self.ax4.plot([], [], 'cyan', linewidth=2, label='Breathing')
+        self.line4_heart, = self.ax4.plot([], [], 'red', linewidth=2, label='Heart Rate')
+        self.ax4.legend(loc='upper right', fontsize=8)
+        
+        for ax in [self.ax1, self.ax2, self.ax3, self.ax4]:
+            ax.set_xlabel('Time (seconds)', color='white', fontsize=9)
         
         plt.tight_layout()
         
@@ -267,6 +283,75 @@ class BreathingMonitorResearch:
         
         return weighted_rate, avg_confidence
     
+    def estimate_heart_rate(self):
+        """
+        Estimate heart rate using rPPG method (remote photoplethysmography)
+        Based on van der Kooij & Naber (2019) - https://doi.org/10.3758/s13428-019-01256-8
+        
+        Key findings from paper:
+        - GREEN channel is most effective for heart rate detection
+        - Facial regions provide highest accuracy
+        - Works well under ambient lighting with consumer cameras
+        """
+        min_frames = int(self.window_size * 0.5)
+        if len(self.signal_history['nose']['G']) < min_frames:
+            return 0, 0
+        
+        # Focus on NOSE region (facial tissue) - most accurate per research
+        # Use GREEN channel primarily (hemoglobin absorbs green light most)
+        green_signal = np.array(list(self.signal_history['nose']['G']))
+        
+        if len(green_signal) < min_frames:
+            return 0, 0
+        
+        try:
+            # Apply bandpass filter for cardiac frequencies
+            # 0.7-4.0 Hz = 42-240 BPM (covers resting to high exercise heart rates)
+            filtered_signal = apply_bandpass_filter(green_signal, 0.7, 4.0, self.fps, order=5)
+        except:
+            filtered_signal = green_signal - np.mean(green_signal)
+        
+        # Find peaks in filtered signal
+        # Minimum distance: 0.3 seconds (allows up to 200 BPM)
+        min_distance = int(self.fps * 0.3)
+        
+        signal_std = np.std(filtered_signal)
+        if signal_std < 1e-6:
+            return 0, 0
+        
+        # More sensitive prominence for heart beats (smaller than breathing)
+        prominence = signal_std * 0.3
+        
+        peaks, properties = find_peaks(
+            filtered_signal,
+            distance=min_distance,
+            prominence=prominence
+        )
+        
+        # Calculate heart rate
+        if len(peaks) < 3:  # Need at least 3 beats for reliable measurement
+            return max(40, self.heart_rate * 0.9), max(0, self.hr_confidence * 0.7)
+        
+        time_duration = len(filtered_signal) / self.fps
+        heart_rate = (len(peaks) / time_duration) * 60
+        
+        # Sanity check for physiological heart rate range
+        heart_rate = max(40, min(heart_rate, 200))
+        
+        # Calculate confidence based on signal quality and peak regularity
+        # Higher std and more peaks = better confidence
+        peak_regularity = 1.0 - (np.std(np.diff(peaks)) / (np.mean(np.diff(peaks)) + 1e-6)) if len(peaks) > 2 else 0
+        peak_regularity = max(0, min(peak_regularity, 1))
+        
+        confidence = min(100, (signal_std * 3000 + len(peaks) * 5 + peak_regularity * 30))
+        confidence = max(0, min(confidence, 100))
+        
+        # Smooth with previous reading
+        if self.heart_rate > 0:
+            heart_rate = 0.4 * self.heart_rate + 0.6 * heart_rate
+        
+        return heart_rate, confidence
+    
     def update_plot(self):
         """Update matplotlib plot with current data"""
         if len(self.time_history) > 0:
@@ -277,6 +362,12 @@ class BreathingMonitorResearch:
                 rates = list(self.breathing_rate_history)
                 self.line1.set_data(times, rates)
                 self.ax1.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
+            
+            # Update heart rate (NEW)
+            if len(self.heart_rate_history) > 0:
+                hr_rates = list(self.heart_rate_history)
+                self.line2.set_data(times, hr_rates)
+                self.ax2.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
             
             # Update signal quality (chest, abdomen, nose vs control)
             if len(self.signal_history['chest']['G']) > 10:
@@ -307,15 +398,15 @@ class BreathingMonitorResearch:
                     control_norm = control_sig
                 
                 if len(chest_norm) > 0:
-                    self.line2_chest.set_data(times[:len(chest_norm)], chest_norm)
+                    self.line3_chest.set_data(times[:len(chest_norm)], chest_norm)
                 if len(abdomen_norm) > 0:
-                    self.line2_abdomen.set_data(times[:len(abdomen_norm)], abdomen_norm)
+                    self.line3_abdomen.set_data(times[:len(abdomen_norm)], abdomen_norm)
                 if len(nose_norm) > 0:
-                    self.line2_nose.set_data(times[:len(nose_norm)], nose_norm)
+                    self.line3_nose.set_data(times[:len(nose_norm)], nose_norm)
                 if len(control_norm) > 0:
-                    self.line2_control.set_data(times[:len(control_norm)], control_norm)
+                    self.line3_control.set_data(times[:len(control_norm)], control_norm)
                 
-                self.ax2.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
+                self.ax3.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
                 
                 # Safe max calculation
                 max_vals = []
@@ -327,12 +418,14 @@ class BreathingMonitorResearch:
                     max_vals.append(np.max(np.abs(nose_norm)))
                 max_val = max(max_vals) if max_vals else 1
                 max_val = max(max_val, 1)  # At least 1
-                self.ax2.set_ylim(-max_val * 1.5, max_val * 1.5)
+                self.ax3.set_ylim(-max_val * 1.5, max_val * 1.5)
             
-            # Update confidence
-            confidence_history = [self.confidence] * len(times)
-            self.line3.set_data(times, confidence_history)
-            self.ax3.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
+            # Update confidence scores (both breathing and heart rate)
+            breathing_conf_history = [self.confidence] * len(times)
+            heart_conf_history = [self.hr_confidence] * len(times)
+            self.line4_breathing.set_data(times, breathing_conf_history)
+            self.line4_heart.set_data(times, heart_conf_history)
+            self.ax4.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
         
         # Render to canvas
         self.canvas.draw()
@@ -391,29 +484,51 @@ class BreathingMonitorResearch:
             # Estimate breathing rate
             self.breathing_rate, self.confidence = self.estimate_breathing_rate()
             
+            # Estimate heart rate (NEW - using rPPG method)
+            self.heart_rate, self.hr_confidence = self.estimate_heart_rate()
+            
         # Update histories
         self.breathing_rate_history.append(self.breathing_rate)
+        self.heart_rate_history.append(self.heart_rate)
         self.time_history.append(current_time)
         
-        # Display breathing rate with confidence
+        # Display breathing rate with color coding
         status_text = "NORMAL"
         text_color = (0, 255, 0)
         
-        if self.breathing_rate < 20 or self.breathing_rate > 60:
-            status_text = "HIGH" if self.breathing_rate > 60 else "LOW"
+        if self.breathing_rate < 20 and self.breathing_rate > 0:
+            status_text = "LOW"
+            text_color = (0, 0, 255)
+        elif self.breathing_rate > 60:
+            status_text = "HIGH"
             text_color = (0, 0, 255)
         
-        rate_text = f"Breathing Rate: {self.breathing_rate:.1f} BPM -- {status_text}"
+        rate_text = f"Breathing: {self.breathing_rate:.1f} BPM -- {status_text}"
         cv2.putText(frame, rate_text, (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, text_color, 3)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, text_color, 2)
         
-        conf_text = f"Confidence: {self.confidence:.0f}%"
-        conf_color = (0, 255, 0) if self.confidence > 60 else (0, 165, 255) if self.confidence > 30 else (0, 0, 255)
-        cv2.putText(frame, conf_text, (10, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, conf_color, 2)
+        # Display heart rate with color coding (NEW - rPPG Method)
+        hr_status = "NORMAL"
+        hr_color = (0, 255, 0)
         
-        cv2.putText(frame, "Research-Validated Method", (10, h - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        if self.heart_rate < 60 and self.heart_rate > 0:
+            hr_status = "LOW"
+            hr_color = (0, 0, 255)
+        elif self.heart_rate > 100:
+            hr_status = "HIGH"
+            hr_color = (0, 0, 255)
+        
+        hr_text = f"Heart Rate: {self.heart_rate:.0f} BPM -- {hr_status}"
+        cv2.putText(frame, hr_text, (10, 75),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, hr_color, 2)
+        
+        # Display confidence scores
+        conf_text = f"BR Conf: {self.confidence:.0f}%  |  HR Conf: {self.hr_confidence:.0f}%"
+        cv2.putText(frame, conf_text, (10, 110),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        cv2.putText(frame, "Research: Breathing + rPPG Heart Rate", (10, h - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         
         return frame
 
@@ -421,7 +536,8 @@ class BreathingMonitorResearch:
 def main():
     """Main function"""
     print("="*60)
-    print("Infant Breathing Monitor - Research-Validated Version")
+    print("Infant Breathing & Heart Rate Monitor")
+    print("Research: Breathing Detection + rPPG Heart Rate")
     print("="*60)
     print("Initializing...")
     

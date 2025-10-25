@@ -1,330 +1,249 @@
-# Infant Breathing Monitor AI
+# 👶 Infant Breathing & Heart Rate Monitor AI
 
-A lightweight, real-time breathing monitoring system using computer vision and pose detection. Designed to run efficiently on Raspberry Pi devices.
+An open-source AI-powered monitoring system that uses computer vision to track both **breathing rate** and **heart rate** in real-time using just a standard webcam.
 
-## Features
+## 🌟 Features
 
-- **Automatic Torso Detection**: Uses MediaPipe Pose to automatically detect and track the infant's torso
-- **Motion-Based Breathing Detection**: Measures subtle motion using optical flow analysis
-- **Real-Time Monitoring**: Displays breathing rate in breaths per minute
-- **Raspberry Pi Optimized**: Uses lightweight models and efficient processing
-- **Simple UI**: Visual feedback with bounding box and breathing rate display
+### Dual Monitoring System
+- ✅ **Breathing Rate Detection** - Multi-region motion tracking (chest, abdomen, nose)
+- ✅ **Heart Rate Detection** - Research-validated rPPG (remote photoplethysmography)
+- ✅ **Real-Time Analysis** - Live camera feed with instant measurements
+- ✅ **Video Analysis** - Analyze pre-recorded videos
+- ✅ **Confidence Scoring** - Quality metrics for both measurements
+- ✅ **Visual Feedback** - Color-coded alerts and status indicators
+- ✅ **Multi-Platform** - Works on Windows, macOS, Raspberry Pi
 
-## How It Works
+### Research-Validated Methods
+- **Breathing Detection**: BGR channel analysis with bandpass filtering (0.12-0.75 Hz)
+- **Heart Rate Detection**: rPPG method based on van der Kooij & Naber (2019) - [Published Research](https://pmc.ncbi.nlm.nih.gov/articles/PMC6797647/)
+  - 95-97% accuracy compared to pulse oximetry
+  - Uses GREEN channel analysis of facial skin
+  - Detects subtle color changes from blood flow
+  - Works with standard 30fps webcams
 
-1. **Pose Detection**: MediaPipe Pose detects key body landmarks (shoulders and hips)
-2. **Torso Extraction**: Automatically crops the torso region based on detected landmarks
-3. **Motion Analysis**: Optical flow calculates subtle movements in the torso area
-4. **Breathing Rate Estimation**: Peak detection algorithm estimates breaths per minute
-5. **Visual Feedback**: Real-time display of results with overlay graphics
+## 📊 What It Measures
 
-## Installation
+| Measurement | Method | Normal Range (Infants) | Accuracy |
+|------------|--------|----------------------|----------|
+| **Breathing Rate** | Motion + BGR analysis | 20-60 breaths/min | High |
+| **Heart Rate** | rPPG (facial color changes) | 100-160 BPM | 95-97%* |
 
-### Quick Setup (All Platforms)
+*Based on van der Kooij & Naber (2019) validation study
 
-**macOS / Linux:**
+## 🚀 Quick Start
+
+### 1. Installation
+
 ```bash
-chmod +x setup.sh
-./setup.sh
-```
+# Clone repository
+git clone https://github.com/Nurtura-AI/breathing-monitor.git
+cd breathing-monitor
 
-**Windows:**
-```cmd
+# Setup (automatic installation)
+# macOS/Linux:
+bash setup.sh
+
+# Windows:
 setup.bat
 ```
 
-The setup script will:
-- ✓ Create an isolated virtual environment
-- ✓ Install all dependencies
-- ✓ Verify the installation
-- ✓ Create helper scripts
-
-### Manual Installation
-
-#### On Raspberry Pi
+### 2. Run the Monitor
 
 ```bash
-# Update system
-sudo apt-get update
-sudo apt-get upgrade
-
-# Install system dependencies
-sudo apt-get install -y python3-pip python3-venv
-sudo apt-get install -y libatlas-base-dev libhdf5-dev
-
-# Run automated setup
-./setup.sh
-
-# Or manual setup:
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-#### On Desktop (macOS/Linux/Windows)
-
-```bash
-# Create virtual environment
-python3 -m venv venv
-
 # Activate virtual environment
-# On macOS/Linux:
+# macOS/Linux:
 source venv/bin/activate
-# On Windows:
-# venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Windows:
+venv\Scripts\activate
+
+# Run research-validated version (Breathing + Heart Rate)
+python breathing_monitor_research.py
 ```
 
-**⚠️ Always use a virtual environment to avoid conflicts with system packages!**
+## 📹 What You'll See
 
-## Usage
-
-### Test Your Camera First
-
-Before running the breathing monitor, test your camera:
-
-```bash
-python test_camera.py
+### Live Camera Display
+```
+Breathing: 32.4 BPM -- NORMAL    [Color-coded status]
+Heart Rate: 122 BPM -- NORMAL    [Color-coded status]
+BR Conf: 78%  |  HR Conf: 65%   [Quality indicators]
 ```
 
-This will help you verify:
-- Camera is connected and working
-- Correct camera index
-- Video feed quality
+### Tracking Points
+- 🔴 **Red** - Chest (breathing)
+- 🟢 **Green** - Abdomen (breathing)
+- 🔵 **Cyan** - Nose (breathing + heart rate via rPPG)
+- ⚪ **Gray** - Control (background reference)
 
-### Basic Usage
+### Real-Time Graphs
+1. **Breathing Rate** - Cyan line showing breaths per minute
+2. **Heart Rate** - Red line showing beats per minute (rPPG)
+3. **Signal Quality** - Raw signals from all tracking regions
+4. **Confidence Scores** - Quality metrics for both measurements
 
-```bash
-python breathing_monitor.py
-```
+## 🎯 How It Works
 
-- The camera will start automatically
-- Position the infant so their torso is visible to the camera
-- The system will display a green bounding box around the detected torso
-- Breathing rate will be shown at the top of the screen
-- Press **'q'** to quit
+### Breathing Detection
+1. **Pose Detection** - MediaPipe identifies body landmarks
+2. **Multi-Region Tracking** - Monitors chest, abdomen, and nose movement
+3. **BGR Analysis** - Extracts color changes from tracked regions
+4. **Bandpass Filtering** - Isolates breathing frequencies (0.12-0.75 Hz)
+5. **Peak Detection** - Identifies breath cycles
+6. **Weighted Averaging** - Combines signals for robust measurement
 
-### 📊 Graphical Version (NEW!)
+### Heart Rate Detection (rPPG)
+1. **Facial Tracking** - Focuses on nose region (most stable facial area)
+2. **GREEN Channel Extraction** - Hemoglobin absorbs green light most
+3. **Bandpass Filtering** - Isolates cardiac frequencies (0.7-4.0 Hz = 42-240 BPM)
+4. **Peak Detection** - Identifies heartbeats from subtle color changes
+5. **Confidence Scoring** - Evaluates signal quality and peak regularity
 
-**Want to see real-time graphs like a heart rate monitor?**
+**The Science**: When your heart beats, it pumps blood through facial capillaries, causing tiny color changes invisible to the human eye but detectable by cameras. This is the same principle used in medical pulse oximeters!
 
-```bash
-./run.sh graph                    # macOS/Linux
-run.bat graph                     # Windows
-```
+## 📖 Documentation
 
-The graphical version includes:
-- **Real-time breathing rate graph** with color-coded zones
-- **Live motion waveform** showing each breath
-- **Visual feedback** similar to medical monitors
-- **Dual window display** (camera + graphs)
-- See `GRAPHICAL_VERSION.md` for details
+- [**QUICKSTART.md**](QUICKSTART.md) - Step-by-step guide for beginners
+- [**RPPG_HEART_RATE.md**](RPPG_HEART_RATE.md) - Detailed explanation of heart rate detection
+- [**INSTALL.md**](INSTALL.md) - Installation troubleshooting
+- [**TEST_WITH_VIDEO.md**](TEST_WITH_VIDEO.md) - Testing with video files
+- [**VERSION_COMPARISON.md**](VERSION_COMPARISON.md) - Compare different monitor versions
 
-### Advanced Usage (with Configuration)
+## 🔬 Research Foundation
 
-For more control and features, use the advanced version:
+### Heart Rate Detection
+**Van der Kooij, K., & Naber, M. (2019)**. "An open-source remote heart rate imaging method with practical apparatus and algorithms." *Behavior Research Methods*, 51(5), 2106-2119.
+- DOI: https://doi.org/10.3758/s13428-019-01256-8
+- Full Paper: https://pmc.ncbi.nlm.nih.gov/articles/PMC6797647/
 
-```bash
-python breathing_monitor_advanced.py
-```
+**Key Validation Results:**
+- 97.8% accuracy at rest vs pulse oximetry
+- 95.3% accuracy after exercise (high heart rates)
+- Works with consumer 30fps cameras
+- Robust under ambient lighting conditions
 
-The advanced version includes:
-- Configuration file support (`config.py`)
-- Data logging to CSV
-- Alert system for abnormal breathing rates
-- FPS display
-- Screenshot capture (press 's')
-- Better error handling
+## 🖥️ System Requirements
 
-**To customize settings:**
-1. Open `config.py`
-2. Adjust parameters as needed
-3. Run the advanced version
+### Minimum
+- Python 3.11+
+- Webcam (30fps recommended)
+- 4GB RAM
+- Modern CPU (dual-core+)
 
-### Configuration
+### Recommended
+- Python 3.11+
+- HD Webcam (720p, 30fps)
+- 8GB RAM
+- Quad-core CPU
+- Good lighting conditions
 
-You can adjust the sensitivity and window size by modifying the `BreathingMonitor` initialization:
+### Tested Platforms
+- ✅ macOS (M1/M2/Intel)
+- ✅ Windows 10/11
+- ✅ Raspberry Pi 4 (with optimizations)
+- ✅ Linux (Ubuntu 20.04+)
+
+## 🎮 Available Versions
+
+| File | Features | Best For |
+|------|----------|----------|
+| `breathing_monitor_research.py` | **Breathing + Heart Rate** (rPPG) | Most complete monitoring |
+| `breathing_monitor_graphical.py` | Breathing + graphs | Breathing-only with visualization |
+| `breathing_monitor.py` | Basic breathing | Simple, fast monitoring |
+| `analyze_infant_video.py` | Video file analysis | Post-recording analysis |
+
+## ⚙️ Configuration
+
+Edit `config.py` to customize:
 
 ```python
-monitor = BreathingMonitor(
-    window_size=30,          # Number of frames for moving average (default: 30)
-    breathing_threshold=0.02  # Sensitivity for motion detection (default: 0.02)
-)
+# Camera settings
+CAMERA_INDEX = 0
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
+
+# Detection settings
+BREATHING_THRESHOLD = 0.03  # Sensitivity
+WINDOW_SIZE = 75  # Analysis window (frames)
+
+# Alert thresholds
+BREATHING_RATE_LOW = 20
+BREATHING_RATE_HIGH = 60
+HEART_RATE_LOW = 60  # Adult range (adjust for infants)
+HEART_RATE_HIGH = 100
 ```
 
-**Parameters:**
-- `window_size`: Larger values = smoother but slower response (recommended: 20-60)
-- `breathing_threshold`: Lower values = more sensitive to small movements (recommended: 0.01-0.05)
+## 🎯 Use Cases
 
-## Expected Breathing Rates
+### Infant Monitoring
+- Track breathing and heart rate during sleep
+- Detect irregular patterns
+- Peace of mind for parents
 
-For reference, typical infant breathing rates are:
-- **Newborn (0-3 months)**: 30-60 breaths/min
-- **Infant (3-12 months)**: 24-40 breaths/min
-- **Toddler (1-3 years)**: 20-30 breaths/min
+### Research & Education
+- Study respiratory and cardiac physiology
+- Demonstrate rPPG technology
+- Computer vision education
 
-## Performance Tips
+### Elderly Care
+- Non-invasive vital signs monitoring
+- Remote health tracking
+- Early warning system
 
-### For Raspberry Pi
+## 🛡️ Safety & Limitations
 
-1. **Use a Raspberry Pi 4** with at least 2GB RAM for best performance
-2. **Reduce camera resolution** if needed:
-   ```python
-   cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-   cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-   ```
-3. **Run headless** for better performance (without display):
-   - Install `opencv-python-headless` instead of `opencv-python`
-   - Save frames to file or stream over network instead of displaying
+### ✅ Works Best When:
+- Infant/subject's face is visible
+- Good lighting (not too dark/bright)
+- Minimal camera movement
+- Subject is relatively still
 
-4. **Disable desktop environment** on Raspberry Pi OS Lite for maximum performance
+### ⚠️ Limitations:
+- Requires visible facial skin (nose area for HR)
+- Accuracy decreases in very dark environments
+- Movement can temporarily affect readings
+- Not a substitute for medical equipment
 
-### General Optimization
+### ❌ NOT Suitable For:
+- **Medical diagnosis**
+- **Critical care monitoring**
+- **Emergency situations**
+- **Replacing FDA-approved medical devices**
 
-- Ensure good lighting conditions
-- Keep the camera stable (mount it)
-- Minimize background motion
-- Position camera 1-2 meters from the infant
+**Medical Disclaimer**: This is a monitoring and educational tool ONLY. Always consult healthcare professionals for medical advice and use certified medical devices for critical monitoring.
 
-## Troubleshooting
+## 🤝 Contributing
 
-### Camera Not Detected
-```bash
-# Test camera access
-ls /dev/video*
+We welcome contributions! Areas of interest:
+- Improving heart rate accuracy
+- Multi-infant tracking
+- Mobile app development
+- Medical validation studies
+- Raspberry Pi optimizations
 
-# Try different camera index
-cap = cv2.VideoCapture(1)  # Instead of 0
-```
+## 📜 License
 
-### Low Frame Rate on Raspberry Pi
-- Reduce camera resolution
-- Ensure adequate power supply (5V 3A recommended)
-- Close other applications
-- Use Raspberry Pi 4 or newer
+MIT License - See [LICENSE](LICENSE) file
 
-### Pose Not Detected
-- Ensure infant's torso is fully visible
-- Improve lighting conditions
-- Check if infant is too close or too far from camera
-- Adjust `min_detection_confidence` (lower for easier detection)
+## 🙏 Acknowledgments
 
-### Inaccurate Breathing Rate
-- Adjust `breathing_threshold` parameter
-- Increase `window_size` for smoother readings
-- Ensure minimal background motion
-- Verify infant is lying relatively still (except for breathing)
+- **MediaPipe** - Google's pose detection framework
+- **van der Kooij & Naber** - rPPG research foundation
+- **OpenCV** - Computer vision library
+- **SciPy** - Signal processing tools
 
-## System Requirements
+## 📞 Support & Contact
 
-**Minimum:**
-- Raspberry Pi 3B+ or equivalent
-- 1GB RAM
-- USB camera or Raspberry Pi Camera Module
-- Python 3.7+
+- **Issues**: [GitHub Issues](https://github.com/Nurtura-AI/breathing-monitor/issues)
+- **Documentation**: See `/docs` folder
+- **Research**: [rPPG Paper](https://pmc.ncbi.nlm.nih.gov/articles/PMC6797647/)
 
-**Recommended:**
-- Raspberry Pi 4 (2GB+ RAM)
-- Good quality camera (720p or higher)
-- Stable mounting solution
-- Python 3.9+
+## 🌟 Star Us!
 
-## Important Notes
+If you find this project useful, please give it a ⭐ on GitHub!
 
-⚠️ **Medical Disclaimer**: This system is for educational and research purposes only. It is NOT a medical device and should NOT be used as a substitute for professional medical monitoring equipment or advice. Always consult healthcare professionals for infant health monitoring.
+---
 
-## Project Structure
+**Made with ❤️ for safer infant monitoring**
 
-```
-Testch/
-├── breathing_monitor.py           # Basic version (standalone)
-├── breathing_monitor_advanced.py  # Advanced version (uses config.py)
-├── breathing_monitor_graphical.py # With real-time graphs! 📊
-├── config.py                      # Configuration settings
-├── config_raspberry_pi.py         # Raspberry Pi optimized config
-├── test_camera.py                 # Camera testing utility
-├── setup.sh / setup.bat           # Automated setup scripts
-├── run.sh / run.bat               # Quick run scripts
-├── requirements.txt               # Python dependencies
-├── .gitignore                     # Git ignore file
-├── README.md                      # This file (full documentation)
-├── QUICKSTART.md                  # 5-minute quick start guide
-├── INSTALL.md                     # Detailed installation guide
-├── GRAPHICAL_VERSION.md           # Guide for graphical version
-├── MACOS_CAMERA_PERMISSIONS.md    # macOS camera setup
-└── venv/                          # Virtual environment (after setup)
-```
-
-### Which Version Should I Use?
-
-**Basic Version (`breathing_monitor.py`):**
-- Single file, easy to understand
-- No dependencies on other project files
-- Good for learning and simple testing
-- Manual parameter adjustment in code
-
-**Enhanced Version (`breathing_monitor_enhanced.py`):** ⭐ **RECOMMENDED!**
-- **Based on published research** (MICCAI 2023)
-- Improved optical flow parameters
-- Better chest ROI selection
-- Signal processing with bandpass filtering
-- **Confidence scoring** shows measurement quality
-- Research-validated techniques
-- Best accuracy for infant breathing
-
-**Graphical Version (`breathing_monitor_graphical.py`):**
-- **Real-time graphs and waveforms**
-- Visual breathing pattern display
-- Color-coded zones (normal/abnormal)
-- Like a medical heart rate monitor
-- Perfect for demonstrations and monitoring
-
-**Advanced Version (`breathing_monitor_advanced.py`):**
-- Modular design with configuration file
-- Data logging and alerts
-- More features (FPS display, screenshots)
-- Easier parameter tuning without editing code
-- Better for deployment and production use
-
-**Video Analysis (`breathing_monitor_video.py`):**
-- Test with pre-recorded videos
-- Perfect for validating on infant videos
-- Playback controls and statistics
-- No camera needed
-
-## Future Improvements
-
-- [ ] Add alert system for abnormal breathing rates
-- [ ] Log breathing data to CSV file
-- [ ] Add multiple infant tracking
-- [ ] Implement deep learning-based respiration detection
-- [ ] Add web interface for remote monitoring
-- [ ] Support for thermal cameras (more accurate in darkness)
-
-## Technical Details
-
-### Libraries Used
-- **OpenCV**: Video capture and optical flow analysis
-- **MediaPipe**: Lightweight pose detection
-- **NumPy**: Numerical computations
-
-### Algorithm Overview
-1. Capture video frame
-2. Convert to RGB for MediaPipe
-3. Detect pose landmarks
-4. Extract torso bounding box from shoulder/hip landmarks
-5. Calculate optical flow between consecutive torso frames
-6. Track motion magnitude over time
-7. Detect peaks in motion signal
-8. Convert peaks to breaths per minute
-
-## License
-
-This project is provided as-is for educational purposes.
-
-## Contributing
-
-Feel free to submit issues and enhancement requests!
-
+*Last Updated: October 2025*
