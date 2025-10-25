@@ -84,6 +84,11 @@ class BreathingMonitorResearch:
         # Track landmark quality
         self.landmark_quality = {}
         
+        # AGE/SIZE DETECTION (NEW)
+        self.age_category = "adult"  # infant, child, or adult
+        self.body_size_cm = 0  # Estimated height in cm
+        self.detection_confidence = 0  # Confidence in age detection
+        
         # For graphing
         self.breathing_rate_history = deque(maxlen=window_size)
         self.heart_rate_history = deque(maxlen=window_size)  # NEW: Heart rate history
@@ -233,10 +238,171 @@ class BreathingMonitorResearch:
         torso_height = abs((shoulder_mid_y - hip_mid_y) * h)
         shoulder_distance = abs((right_shoulder.x - left_shoulder.x) * w)
         
-        # Adaptive block size (20-80 pixels based on body size)
+        # Adaptive block size (30-80 pixels based on body size)
         self.adaptive_block_size = int(np.clip(min(torso_height, shoulder_distance) * 0.25, 30, 80))
         
+        # === AGE/SIZE DETECTION (NEW) ===
+        # Estimate age category based on body proportions
+        self.detect_age_category(landmarks, frame_shape)
+        
         self.points_initialized = True
+    
+    def detect_age_category(self, landmarks, frame_shape):
+        """
+        Detect if subject is infant, child, or adult based on body measurements.
+        Uses multiple body proportion metrics for robust classification.
+        """
+        h, w = frame_shape[:2]
+        
+        try:
+            # Get key landmarks
+            nose = landmarks[0]
+            left_shoulder = landmarks[11]
+            right_shoulder = landmarks[12]
+            left_hip = landmarks[23]
+            right_hip = landmarks[24]
+            left_ankle = landmarks[27]
+            right_ankle = landmarks[28]
+            
+            # Calculate body measurements in pixels
+            # 1. Head to toe height (if feet visible)
+            if left_ankle.visibility > 0.5 or right_ankle.visibility > 0.5:
+                ankle_y = min(left_ankle.y, right_ankle.y) if left_ankle.visibility > 0.5 and right_ankle.visibility > 0.5 else (left_ankle.y if left_ankle.visibility > 0.5 else right_ankle.y)
+                total_height_px = abs((nose.y - ankle_y) * h)
+            else:
+                # Estimate from torso (head to hips)
+                torso_height_px = abs((nose.y - (left_hip.y + right_hip.y) / 2) * h)
+                total_height_px = torso_height_px * 2.5  # Approximate full height
+            
+            # 2. Shoulder width
+            shoulder_width_px = abs((right_shoulder.x - left_shoulder.x) * w)
+            
+            # 3. Torso height (shoulders to hips)
+            torso_height_px = abs(((left_shoulder.y + right_shoulder.y) / 2 - (left_hip.y + right_hip.y) / 2) * h)
+            
+            # 4. Head size (nose to shoulder distance as proxy)
+            head_size_px = abs((nose.y - (left_shoulder.y + right_shoulder.y) / 2) * h)
+            
+            # Estimate actual height in cm (assuming camera FOV)
+            # Average camera at 3 feet (~90cm) captures roughly 100-150cm width
+            # Scale based on frame width
+            pixels_per_cm = w / 100  # Rough calibration
+            estimated_height_cm = total_height_px / pixels_per_cm
+            
+            # Calculate body proportions (helps with age detection)
+            head_to_body_ratio = head_size_px / torso_height_px if torso_height_px > 0 else 0
+            
+            # === CLASSIFICATION LOGIC ===
+            # Infants (0-12 months): 50-80cm, large head ratio
+            # Toddlers/Children (1-12 years): 80-150cm, moderate head ratio
+            # Adults (13+ years): 150-200cm, small head ratio
+            
+            confidence_scores = {}
+            
+            # Score for INFANT (0-2 years)
+            infant_score = 0
+            if estimated_height_cm < 90:  # Under 90cm
+                infant_score += 3
+            elif estimated_height_cm < 110:  # 90-110cm
+                infant_score += 1
+            
+            if head_to_body_ratio > 0.4:  # Large head relative to body
+                infant_score += 2
+            
+            if torso_height_px < 150:  # Small torso
+                infant_score += 2
+            
+            confidence_scores['infant'] = infant_score
+            
+            # Score for CHILD (2-12 years)
+            child_score = 0
+            if 80 < estimated_height_cm < 150:  # 80-150cm
+                child_score += 3
+            
+            if 0.25 < head_to_body_ratio < 0.45:  # Moderate head ratio
+                child_score += 2
+            
+            if 120 < torso_height_px < 250:  # Medium torso
+                child_score += 2
+            
+            confidence_scores['child'] = child_score
+            
+            # Score for ADULT (13+ years)
+            adult_score = 0
+            if estimated_height_cm > 140:  # Over 140cm
+                adult_score += 3
+            
+            if head_to_body_ratio < 0.35:  # Small head relative to body
+                adult_score += 2
+            
+            if torso_height_px > 200:  # Large torso
+                adult_score += 2
+            
+            confidence_scores['adult'] = adult_score
+            
+            # Select category with highest score
+            best_category = max(confidence_scores, key=confidence_scores.get)
+            best_score = confidence_scores[best_category]
+            
+            # Update with smoothing (don't change category too rapidly)
+            if best_score > 3:  # Only change if confident
+                if not hasattr(self, 'age_category') or self.age_category == "adult":
+                    self.age_category = best_category
+                else:
+                    # Smooth transitions - need multiple frames to change
+                    if not hasattr(self, 'category_votes'):
+                        self.category_votes = {best_category: 1}
+                    else:
+                        self.category_votes[best_category] = self.category_votes.get(best_category, 0) + 1
+                        if self.category_votes[best_category] > 10:  # 10 consecutive votes
+                            self.age_category = best_category
+                            self.category_votes = {}
+            
+            self.body_size_cm = estimated_height_cm
+            self.detection_confidence = best_score / 7.0  # Normalize to 0-1
+            
+        except Exception as e:
+            # Fallback to adult if detection fails
+            self.age_category = "adult"
+            self.body_size_cm = 170
+            self.detection_confidence = 0.5
+    
+    def get_normal_ranges(self):
+        """
+        Get age-appropriate normal ranges for heart rate and breathing rate.
+        Returns dict with thresholds based on detected age category.
+        """
+        ranges = {
+            'infant': {
+                'hr_low': 100,
+                'hr_high': 180,
+                'hr_normal': (100, 160),
+                'br_low': 25,
+                'br_high': 70,
+                'br_normal': (30, 60),
+                'label': 'Infant (0-2yr)'
+            },
+            'child': {
+                'hr_low': 70,
+                'hr_high': 140,
+                'hr_normal': (70, 120),
+                'br_low': 18,
+                'br_high': 45,
+                'br_normal': (20, 35),
+                'label': 'Child (2-12yr)'
+            },
+            'adult': {
+                'hr_low': 50,
+                'hr_high': 110,
+                'hr_normal': (60, 100),
+                'br_low': 10,
+                'br_high': 25,
+                'br_normal': (12, 20),
+                'label': 'Adult (13+yr)'
+            }
+        }
+        
+        return ranges.get(self.age_category, ranges['adult'])
         
     def extract_region_signal(self, frame, center_point):
         """
@@ -614,42 +780,57 @@ class BreathingMonitorResearch:
         self.heart_rate_history.append(self.heart_rate)
         self.time_history.append(current_time)
         
-        # Display breathing rate with color coding
+        # Get age-appropriate normal ranges
+        ranges = self.get_normal_ranges()
+        
+        # Display AGE CATEGORY (NEW)
+        age_text = f"{ranges['label']} | Est: {self.body_size_cm:.0f}cm"
+        age_color = (255, 165, 0) if self.age_category == 'infant' else ((255, 200, 0) if self.age_category == 'child' else (200, 200, 200))
+        cv2.putText(frame, age_text, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, age_color, 2)
+        
+        # Display breathing rate with AGE-APPROPRIATE thresholds
         status_text = "NORMAL"
         text_color = (0, 255, 0)
         
-        if self.breathing_rate < 20 and self.breathing_rate > 0:
+        if self.breathing_rate < ranges['br_low'] and self.breathing_rate > 0:
             status_text = "LOW"
             text_color = (0, 0, 255)
-        elif self.breathing_rate > 60:
+        elif self.breathing_rate > ranges['br_high']:
             status_text = "HIGH"
             text_color = (0, 0, 255)
         
         rate_text = f"Breathing: {self.breathing_rate:.1f} BPM -- {status_text}"
-        cv2.putText(frame, rate_text, (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, text_color, 2)
+        normal_range = f"(Normal: {ranges['br_normal'][0]}-{ranges['br_normal'][1]})"
+        cv2.putText(frame, rate_text, (10, 65),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
+        cv2.putText(frame, normal_range, (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
-        # Display heart rate with color coding (NEW - rPPG Method)
+        # Display heart rate with AGE-APPROPRIATE thresholds
         hr_status = "NORMAL"
         hr_color = (0, 255, 0)
         
-        if self.heart_rate < 60 and self.heart_rate > 0:
+        if self.heart_rate < ranges['hr_low'] and self.heart_rate > 0:
             hr_status = "LOW"
             hr_color = (0, 0, 255)
-        elif self.heart_rate > 100:
+        elif self.heart_rate > ranges['hr_high']:
             hr_status = "HIGH"
             hr_color = (0, 0, 255)
         
         hr_text = f"Heart Rate: {self.heart_rate:.0f} BPM -- {hr_status}"
-        cv2.putText(frame, hr_text, (10, 75),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, hr_color, 2)
+        hr_normal_range = f"(Normal: {ranges['hr_normal'][0]}-{ranges['hr_normal'][1]})"
+        cv2.putText(frame, hr_text, (10, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, hr_color, 2)
+        cv2.putText(frame, hr_normal_range, (10, 145),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
         # Display confidence scores
         conf_text = f"BR Conf: {self.confidence:.0f}%  |  HR Conf: {self.hr_confidence:.0f}%"
-        cv2.putText(frame, conf_text, (10, 110),
+        cv2.putText(frame, conf_text, (10, 175),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        cv2.putText(frame, "Research: Breathing + rPPG Heart Rate", (10, h - 20),
+        cv2.putText(frame, "Research: Breathing + rPPG Heart Rate | Auto Age Detection", (10, h - 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         
         return frame
