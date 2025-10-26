@@ -69,6 +69,10 @@ class SnowflakeLogger:
     def log_vitals(self, monitor: BreathingMonitorResearch):
         if not self.enabled or not self.cursor:
             return False
+        if not monitor.is_stabilized:
+            return False
+        if monitor.heart_rate == 0 and monitor.breathing_rate == 0:
+            return False
         try:
             insert_sql = f"""
             INSERT INTO {config.SNOWFLAKE_TABLE} (HEART_RATE, BREATHING_RATE)
@@ -88,7 +92,7 @@ class SnowflakeLogger:
 
 
 def main():
-    video_path = '/Users/aidenm/Testch/005.mp4'
+    video_path = '/Users/aidenm/Testch/test_videos/002.mp4'
     monitor = BreathingMonitorResearch()
     db_logger = SnowflakeLogger()
     

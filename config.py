@@ -148,6 +148,29 @@ if IS_RASPBERRY_PI:
 
 
 # ====================
+# SNOWFLAKE DATABASE SETTINGS
+# ====================
+
+# Snowflake connection parameters
+# Set these as environment variables or update directly
+SNOWFLAKE_ACCOUNT = "tgusboh-sub09046"  # e.g., "xy12345.us-east-1"
+SNOWFLAKE_USER = "aidenmiah"
+SNOWFLAKE_PASSWORD = "Oscar890890890"
+SNOWFLAKE_DATABASE = "HEALTH_MONITORING"  # e.g., "HEALTH_MONITORING"
+SNOWFLAKE_SCHEMA = "PUBLIC"    # e.g., "PUBLIC"
+SNOWFLAKE_WAREHOUSE = "COMPUTE_WH" # e.g., "COMPUTE_WH"
+
+# Table name for vital signs data
+SNOWFLAKE_TABLE = "VITAL_SIGNS_DATA"
+
+# Enable/disable database logging
+ENABLE_SNOWFLAKE_LOGGING = True
+
+# Interval for saving data to Snowflake (in seconds)
+SNOWFLAKE_LOG_INTERVAL = 10.0
+
+
+# ====================
 # VALIDATION
 # ====================
 

@@ -82,6 +82,10 @@ class SnowflakeLogger:
     def log_vitals(self, monitor):
         if not self.enabled or not self.cursor:
             return False
+        if not monitor.is_stabilized:
+            return False
+        if monitor.heart_rate == 0 and monitor.breathing_rate == 0:
+            return False
         try:
             insert_sql = f"""
             INSERT INTO {config.SNOWFLAKE_TABLE} (HEART_RATE, BREATHING_RATE)
@@ -101,39 +105,58 @@ class SnowflakeLogger:
 
 
 class BreathingMonitorResearch:
-    def __init__(self, window_size=150, block_size=50):
+    def __init__(self, window_size=150, block_size=50, stabilization_frames=90, hr_window_size=210):
         """
         Initialize research-validated breathing monitor.
         
         Args:
             window_size: Number of frames for analysis (5 seconds at 30fps)
-            block_size: Size of tracking blocks around key points (increased for better capture)
+            block_size: Size of tracking blocks around key points
+            stabilization_frames: Number of frames to wait before reporting (3 seconds at 30fps)
+            hr_window_size: Larger window for heart rate (7 seconds at 30fps for better accuracy)
         """
         self.mp_pose = mp.solutions.pose
+        self.mp_face_mesh = mp.solutions.face_mesh
         self.mp_drawing = mp.solutions.drawing_utils
         
-        # UPGRADED: Maximum accuracy pose detection
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=2,  # HIGHEST ACCURACY (0=lite, 1=full, 2=heavy - most accurate)
-            min_detection_confidence=0.7,  # Higher threshold for better detection
-            min_tracking_confidence=0.7,  # Better frame-to-frame tracking
-            smooth_landmarks=True,  # Smoother, more natural landmark movement
-            enable_segmentation=True  # Enable person segmentation for better isolation
+            model_complexity=2,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.7,
+            smooth_landmarks=True,
+            enable_segmentation=True
         )
         
-        # Key points for multi-region tracking
-        # Will track: chest center, abdomen center, shoulders (breathing), background (control)
-        self.points_initialized = False
-        self.tracking_points = []  # Will be populated based on pose
+        self.face_mesh = self.mp_face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.7,
+            refine_landmarks=True
+        )
         
-        # Signal histories for each point and BGR channel
+        self.stabilization_frames = stabilization_frames
+        self.frames_processed = 0
+        self.is_stabilized = False
+        self.primary_person_size = 0
+        self.hr_window_size = hr_window_size
+        
+        self.points_initialized = False
+        self.tracking_points = []
+        self.current_person_bbox = None
+        
         self.signal_history = {
             'chest': {'B': deque(maxlen=window_size), 'G': deque(maxlen=window_size), 'R': deque(maxlen=window_size)},
             'abdomen': {'B': deque(maxlen=window_size), 'G': deque(maxlen=window_size), 'R': deque(maxlen=window_size)},
             'nose': {'B': deque(maxlen=window_size), 'G': deque(maxlen=window_size), 'R': deque(maxlen=window_size)},
             'control': {'B': deque(maxlen=window_size), 'G': deque(maxlen=window_size), 'R': deque(maxlen=window_size)}
         }
+        
+        self.forehead_signal = {'B': deque(maxlen=hr_window_size), 'G': deque(maxlen=hr_window_size), 'R': deque(maxlen=hr_window_size)}
+        self.left_cheek_signal = {'B': deque(maxlen=hr_window_size), 'G': deque(maxlen=hr_window_size), 'R': deque(maxlen=hr_window_size)}
+        self.right_cheek_signal = {'B': deque(maxlen=hr_window_size), 'G': deque(maxlen=hr_window_size), 'R': deque(maxlen=hr_window_size)}
+        self.motion_history = deque(maxlen=30)
         
         self.breathing_rate = 0
         self.heart_rate = 0  # NEW: Heart rate in BPM
@@ -834,14 +857,30 @@ class BreathingMonitorResearch:
         """Process single frame"""
         h, w = frame.shape[:2]
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Pose detection
         results = self.pose.process(rgb_frame)
-        
         current_time = time.time() - self.start_time
+        
+        self.frames_processed += 1
         
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
+            
+            h, w = frame.shape[:2]
+            xs = [lm.x * w for lm in landmarks if lm.visibility > 0.5]
+            ys = [lm.y * h for lm in landmarks if lm.visibility > 0.5]
+            
+            if xs and ys:
+                person_width = max(xs) - min(xs)
+                person_height = max(ys) - min(ys)
+                person_size = person_width * person_height
+                
+                if person_size > self.primary_person_size * 0.8:
+                    self.primary_person_size = max(person_size, self.primary_person_size)
+                elif person_size < self.primary_person_size * 0.5:
+                    return frame
+            
+            if self.frames_processed >= self.stabilization_frames:
+                self.is_stabilized = True
             
             # ENHANCED: Draw full pose skeleton for visualization
             self.mp_drawing.draw_landmarks(
@@ -907,11 +946,14 @@ class BreathingMonitorResearch:
                 cv2.putText(frame, label, label_pos, 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
-            # Estimate breathing rate
-            self.breathing_rate, self.confidence = self.estimate_breathing_rate()
-            
-            # Estimate heart rate (NEW - using rPPG method)
-            self.heart_rate, self.hr_confidence = self.estimate_heart_rate()
+            if self.is_stabilized:
+                self.breathing_rate, self.confidence = self.estimate_breathing_rate()
+                self.heart_rate, self.hr_confidence = self.estimate_heart_rate()
+            else:
+                self.breathing_rate = 0
+                self.heart_rate = 0
+                self.confidence = 0
+                self.hr_confidence = 0
             
         # Update histories
         self.breathing_rate_history.append(self.breathing_rate)
@@ -921,41 +963,46 @@ class BreathingMonitorResearch:
         # Get age-appropriate normal ranges (used for thresholds, not displayed)
         ranges = self.get_normal_ranges()
         
-        # Display breathing rate with AGE-APPROPRIATE thresholds
-        status_text = "NORMAL"
-        text_color = (0, 255, 0)
-        
-        if self.breathing_rate < ranges['br_low'] and self.breathing_rate > 0:
-            status_text = "LOW"
-            text_color = (0, 0, 255)
-        elif self.breathing_rate > ranges['br_high']:
-            status_text = "HIGH"
-            text_color = (0, 0, 255)
-        
-        rate_text = f"Breathing: {self.breathing_rate:.1f} BPM -- {status_text}"
+        if not self.is_stabilized:
+            stabilizing_secs = (self.stabilization_frames - self.frames_processed) / 30.0
+            rate_text = f"Stabilizing... {stabilizing_secs:.1f}s"
+            text_color = (0, 165, 255)
+            status_text = "WAIT"
+        else:
+            status_text = "NORMAL"
+            text_color = (0, 255, 0)
+            
+            if self.breathing_rate < ranges['br_low'] and self.breathing_rate > 0:
+                status_text = "LOW"
+                text_color = (0, 0, 255)
+            elif self.breathing_rate > ranges['br_high']:
+                status_text = "HIGH"
+                text_color = (0, 0, 255)
+            
+            rate_text = f"Breathing: {self.breathing_rate:.1f} BPM -- {status_text}"
         normal_range = f"(Normal: {ranges['br_normal'][0]}-{ranges['br_normal'][1]})"
         cv2.putText(frame, rate_text, (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
         cv2.putText(frame, normal_range, (10, 55),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
-        # Display heart rate with AGE-APPROPRIATE thresholds
-        hr_status = "NORMAL"
-        hr_color = (0, 255, 0)
-        
-        if self.heart_rate < ranges['hr_low'] and self.heart_rate > 0:
-            hr_status = "LOW"
-            hr_color = (0, 0, 255)
-        elif self.heart_rate > ranges['hr_high']:
-            hr_status = "HIGH"
-            hr_color = (0, 0, 255)
-        
-        hr_text = f"Heart Rate: {self.heart_rate:.0f} BPM -- {hr_status}"
-        hr_normal_range = f"(Normal: {ranges['hr_normal'][0]}-{ranges['hr_normal'][1]})"
-        cv2.putText(frame, hr_text, (10, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, hr_color, 2)
-        cv2.putText(frame, hr_normal_range, (10, 110),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        if self.is_stabilized:
+            hr_status = "NORMAL"
+            hr_color = (0, 255, 0)
+            
+            if self.heart_rate < ranges['hr_low'] and self.heart_rate > 0:
+                hr_status = "LOW"
+                hr_color = (0, 0, 255)
+            elif self.heart_rate > ranges['hr_high']:
+                hr_status = "HIGH"
+                hr_color = (0, 0, 255)
+            
+            hr_text = f"Heart Rate: {self.heart_rate:.0f} BPM -- {hr_status}"
+            hr_normal_range = f"(Normal: {ranges['hr_normal'][0]}-{ranges['hr_normal'][1]})"
+            cv2.putText(frame, hr_text, (10, 85),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, hr_color, 2)
+            cv2.putText(frame, hr_normal_range, (10, 110),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
         # Display confidence scores
         conf_text = f"BR Conf: {self.confidence:.0f}%  |  HR Conf: {self.hr_confidence:.0f}%"
