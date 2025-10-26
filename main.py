@@ -8,6 +8,9 @@ import time
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from scipy.signal import find_peaks, butter, filtfilt
+import threading
+from live_kit import call_live_kit
+from flag_vitals_algorithm import flag_vitals
 
 def butter_bandpass(lowcut, highcut, fs, order=5):
     nyquist = 0.5 * fs
@@ -20,6 +23,27 @@ def apply_bandpass_filter(data, lowcut, highcut, fs, order=5):
     b, a = butter_bandpass(lowcut, highcut, fs, order=order)
     y = filtfilt(b, a, data)
     return y
+
+def check_baby_vitals(stop_event, monitor):
+    while not stop_event.is_set():
+        abnormal_stats = flag_vitals()
+        print("Abnormal stats: ", abnormal_stats)
+        vital_summary = "This is list of abnormal vitals for the baby: " + str(abnormal_stats) if abnormal_stats else "All vitals normal"
+        video_frames = list(monitor.recent_frames) if hasattr(monitor, 'recent_frames') else []
+        if len(video_frames) == 150:
+            call_live_kit(vital_summary, video_frames=video_frames)
+            print("vital summary: ", vital_summary)
+        stop_event.wait(10)
+
+def start_vitals_monitoring(monitor):
+    stop_event = threading.Event()
+    vitals_thread = threading.Thread(
+        target=check_baby_vitals,
+        args=[stop_event, monitor],
+        daemon=True
+    )
+    vitals_thread.start()
+    return vitals_thread, stop_event
 
 class BreathingMonitorResearch:
     def __init__(self, window_size=150, block_size=50, hr_window_size=210, processing_size=(640, 480)):
@@ -53,15 +77,15 @@ class BreathingMonitorResearch:
         self.setup_plot()
     
     def reset_data(self):
-        """Reset only the data buffers and state, keeping MediaPipe models intact."""
         self.frames_processed = 0
         self.primary_person_size = 0
         
         self.points_initialized = False
         self.tracking_points = []
         self.current_person_bbox = None
-        self.last_valid_landmarks = None  # Store last good landmarks
-        self.frames_since_detection = 0   # Track frames without detection
+        self.last_valid_landmarks = None
+        self.frames_since_detection = 0
+        self.recent_frames = deque(maxlen=150)
         
         self.signal_history = {
             'chest': {'B': deque(maxlen=self.window_size), 'G': deque(maxlen=self.window_size), 'R': deque(maxlen=self.window_size)},
@@ -637,7 +661,7 @@ class BreathingMonitorResearch:
         return plot_image
     
     def process_frame(self, frame, text_scale=1.0):
-        # Store original frame dimensions for drawing and landmark scaling
+        self.recent_frames.append(frame.copy())
         h, w = frame.shape[:2]
         original_h, original_w = h, w
         
@@ -884,7 +908,7 @@ def resize_with_aspect_ratio(image, target_width, target_height, bg_color=(0, 0,
 
 def main():
     monitor = BreathingMonitorResearch()
-    
+    vitals_thread, stop_event = start_vitals_monitoring(monitor)
     use_webcam = True
     video_path = '/Users/aidenm/Testch/test_videos/002.mp4'
     
@@ -979,7 +1003,9 @@ def main():
             use_webcam = not use_webcam
             cap.release()
             cap = get_capture(use_webcam)
-            monitor.reset_data()  # Reset data buffers, models stay initialized
+            monitor.reset_data()
+            if hasattr(monitor, 'recent_frames'):
+                monitor.recent_frames.clear()  # Reset data buffers, models stay initialized
         elif key == ord(' '):
             paused = not paused
         elif key == ord('s') or key == ord('S'):
@@ -987,6 +1013,8 @@ def main():
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 cv2.imwrite(f'screenshot_{timestamp}.png', combined)
     
+    stop_event.set()
+    vitals_thread.join(timeout=2)
     cap.release()
     cv2.destroyAllWindows()
 
