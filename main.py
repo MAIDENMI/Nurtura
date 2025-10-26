@@ -30,8 +30,8 @@ class BreathingMonitorResearch:
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
             model_complexity=2,
-            min_detection_confidence=0.5,  # Lowered from 0.7 for better detection
-            min_tracking_confidence=0.5,   # Lowered from 0.7 for better tracking
+            min_detection_confidence=0.3,
+            min_tracking_confidence=0.3,
             smooth_landmarks=True,
             enable_segmentation=True
         )
@@ -39,8 +39,8 @@ class BreathingMonitorResearch:
         self.face_mesh = self.mp_face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
-            min_detection_confidence=0.5,  # Lowered from 0.7 for better detection
-            min_tracking_confidence=0.5,   # Lowered from 0.7 for better tracking
+            min_detection_confidence=0.3,
+            min_tracking_confidence=0.3,
             refine_landmarks=True
         )
         
@@ -646,16 +646,23 @@ class BreathingMonitorResearch:
         processing_frame = cv2.resize(frame, self.processing_size)
         
         rgb_frame = cv2.cvtColor(processing_frame, cv2.COLOR_BGR2RGB)
-        results = self.pose.process(rgb_frame)
+        
+        # Process both pose and face mesh
+        pose_results = self.pose.process(rgb_frame)
+        face_results = self.face_mesh.process(rgb_frame)
+        
         current_time = time.time() - self.start_time
         
         self.frames_processed += 1
         
-        if results.pose_landmarks:
+        detection_successful = False
+        
+        if pose_results.pose_landmarks:
+            detection_successful = True
             self.frames_since_detection = 0  # Reset counter
-            self.last_valid_landmarks = results.pose_landmarks  # Store good landmarks
+            self.last_valid_landmarks = pose_results.pose_landmarks  # Store good landmarks
             
-            landmarks = results.pose_landmarks.landmark
+            landmarks = pose_results.pose_landmarks.landmark
             xs = [lm.x * w for lm in landmarks if lm.visibility > 0.5]
             ys = [lm.y * h for lm in landmarks if lm.visibility > 0.5]
             
@@ -672,7 +679,7 @@ class BreathingMonitorResearch:
             
             self.mp_drawing.draw_landmarks(
                 frame,
-                results.pose_landmarks,
+                pose_results.pose_landmarks,
                 self.mp_pose.POSE_CONNECTIONS,
                 landmark_drawing_spec=self.mp_drawing.DrawingSpec(
                     color=(0, 255, 0), thickness=2, circle_radius=2),
@@ -682,8 +689,9 @@ class BreathingMonitorResearch:
             
             self.initialize_tracking_points(landmarks, frame.shape)
         
-        # Use last valid landmarks if detection temporarily failed (up to 10 frames)
-        elif self.last_valid_landmarks and self.frames_since_detection < 10:
+        # Use last valid landmarks if detection temporarily failed (extended to 30 frames)
+        elif self.last_valid_landmarks and self.frames_since_detection < 30:
+            detection_successful = True
             self.frames_since_detection += 1
             
             # Draw with last known good landmarks but with reduced opacity (yellow color)
@@ -697,10 +705,28 @@ class BreathingMonitorResearch:
                     color=(128, 128, 128), thickness=1)  # Dimmed connections
             )
             
-            # Use cached landmarks for tracking points
+            # Use cached landmarks for tracking points - only reinitialize if needed
             landmarks = self.last_valid_landmarks.landmark
-            if not self.points_initialized or self.tracking_points:
+            if not self.points_initialized or not self.tracking_points:
                 self.initialize_tracking_points(landmarks, frame.shape)
+        else:
+            # Detection completely lost - clear tracking state
+            if self.last_valid_landmarks is not None:
+                self.last_valid_landmarks = None
+                self.points_initialized = False
+                self.tracking_points = []
+        
+        # Draw face mesh if available
+        if face_results.multi_face_landmarks:
+            for face_landmarks in face_results.multi_face_landmarks:
+                self.mp_drawing.draw_landmarks(
+                    frame,
+                    face_landmarks,
+                    self.mp_face_mesh.FACEMESH_TESSELATION,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=self.mp_drawing.DrawingSpec(
+                        color=(80, 110, 10), thickness=1, circle_radius=1)
+                )
         
         # Only process tracking points if we have them (from current or cached detection)
         if self.points_initialized and self.tracking_points:
@@ -752,9 +778,16 @@ class BreathingMonitorResearch:
             
             # Add tracking status indicator if using cached landmarks
             if self.frames_since_detection > 0:
-                status_text = f"TRACKING (cached {self.frames_since_detection}f)"
+                cache_age = self.frames_since_detection / 30.0 * 100  # Percentage of max cache time
+                if cache_age < 33:
+                    color = (0, 255, 255)  # Cyan - good
+                elif cache_age < 66:
+                    color = (0, 255, 128)  # Yellow-green - warning
+                else:
+                    color = (0, 128, 255)  # Orange - critical
+                status_text = f"TRACKING (cached {self.frames_since_detection}/30f)"
                 cv2.putText(frame, status_text, (int(10 * text_scale), int(30 * text_scale)),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, (0, 255, 255), max(1, int(2 * text_scale)))
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, color, max(1, int(2 * text_scale)))
             
         self.breathing_rate_history.append(self.breathing_rate)
         self.heart_rate_history.append(self.heart_rate)
@@ -768,7 +801,7 @@ class BreathingMonitorResearch:
             br_list = list(self.breathing_rate_history)
             
             for i in range(len(time_list)):
-                if time_list[i] >= cutoff_time:
+                if time_list[i] >= cutoff_time and br_list[i] > 0:  # Only include non-zero values
                     br_values.append(br_list[i])
             
             if len(br_values) > 0:
@@ -786,7 +819,7 @@ class BreathingMonitorResearch:
             hr_list = list(self.heart_rate_history)
             
             for i in range(len(time_list)):
-                if time_list[i] >= cutoff_time:
+                if time_list[i] >= cutoff_time and hr_list[i] > 0:  # Only include non-zero values
                     hr_values.append(hr_list[i])
             
             if len(hr_values) > 0:
