@@ -48,7 +48,6 @@ def start_vitals_monitoring(monitor):
 class BreathingMonitorResearch:
     def __init__(self, window_size=150, block_size=50, hr_window_size=210, processing_size=(640, 480)):
         self.mp_pose = mp.solutions.pose
-        self.mp_face_mesh = mp.solutions.face_mesh
         self.mp_drawing = mp.solutions.drawing_utils
         
         self.pose = self.mp_pose.Pose(
@@ -58,14 +57,6 @@ class BreathingMonitorResearch:
             min_tracking_confidence=0.3,
             smooth_landmarks=True,
             enable_segmentation=True
-        )
-        
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=1,
-            min_detection_confidence=0.3,
-            min_tracking_confidence=0.3,
-            refine_landmarks=True
         )
         
         self.window_size = window_size
@@ -671,9 +662,8 @@ class BreathingMonitorResearch:
         
         rgb_frame = cv2.cvtColor(processing_frame, cv2.COLOR_BGR2RGB)
         
-        # Process both pose and face mesh
+        # Process pose
         pose_results = self.pose.process(rgb_frame)
-        face_results = self.face_mesh.process(rgb_frame)
         
         current_time = time.time() - self.start_time
         
@@ -739,18 +729,6 @@ class BreathingMonitorResearch:
                 self.last_valid_landmarks = None
                 self.points_initialized = False
                 self.tracking_points = []
-        
-        # Draw face mesh if available
-        if face_results.multi_face_landmarks:
-            for face_landmarks in face_results.multi_face_landmarks:
-                self.mp_drawing.draw_landmarks(
-                    frame,
-                    face_landmarks,
-                    self.mp_face_mesh.FACEMESH_TESSELATION,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=self.mp_drawing.DrawingSpec(
-                        color=(80, 110, 10), thickness=1, circle_radius=1)
-                )
         
         # Only process tracking points if we have them (from current or cached detection)
         if self.points_initialized and self.tracking_points:
@@ -908,9 +886,9 @@ def resize_with_aspect_ratio(image, target_width, target_height, bg_color=(0, 0,
 
 def main():
     monitor = BreathingMonitorResearch()
-    vitals_thread, stop_event = start_vitals_monitoring(monitor)
+    # vitals_thread, stop_event = start_vitals_monitoring(monitor)
     use_webcam = True
-    video_path = '/Users/aidenm/Testch/test_videos/002.mp4'
+    video_path = 'test_videos/001.mp4'
     
     # Base dimensions for scaling calculations
     BASE_WIDTH = 1920
@@ -1013,8 +991,8 @@ def main():
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 cv2.imwrite(f'screenshot_{timestamp}.png', combined)
     
-    stop_event.set()
-    vitals_thread.join(timeout=2)
+    # stop_event.set()
+    # vitals_thread.join(timeout=2)
     cap.release()
     cv2.destroyAllWindows()
 
