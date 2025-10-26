@@ -30,6 +30,7 @@ def check_baby_vitals(stop_event, monitor):
         print("Abnormal stats: ", abnormal_stats)
         vital_summary = "This is list of abnormal vitals for the baby: " + str(abnormal_stats) if abnormal_stats else "All vitals normal"
         video_frames = list(monitor.recent_frames) if hasattr(monitor, 'recent_frames') else []
+        print("video frames: ", len(video_frames))
         if len(video_frames) == 150:
             call_live_kit(vital_summary, video_frames=video_frames)
             print("vital summary: ", vital_summary)
@@ -862,8 +863,8 @@ def resize_with_aspect_ratio(image, target_width, target_height, bg_color=(0, 0,
 
 def main():
     monitor = BreathingMonitorResearch()
-    # vitals_thread, stop_event = start_vitals_monitoring(monitor)
-    use_webcam = True
+    vitals_thread, stop_event = start_vitals_monitoring(monitor)
+    use_webcam = False
     video_path = 'test_videos/001.mp4'
     # video_path = 'test_videos/006.mp4'
     
@@ -980,8 +981,8 @@ def main():
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 cv2.imwrite(f'screenshot_{timestamp}.png', combined)
     
-    # stop_event.set()
-    # vitals_thread.join(timeout=2)
+    stop_event.set()
+    vitals_thread.join(timeout=2)
     cap.release()
     cv2.destroyAllWindows()
 

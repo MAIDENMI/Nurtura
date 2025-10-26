@@ -77,8 +77,8 @@ async def entrypoint(ctx: JobContext, vital_summary: str = None, video_frames: l
         tts="cartesia/sonic-2:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        preemptive_generation=True,
         user_away_timeout=0,
+        allow_interruptions=False,
     )
 
     usage_collector = metrics.UsageCollector()
@@ -98,7 +98,6 @@ async def entrypoint(ctx: JobContext, vital_summary: str = None, video_frames: l
     await session.start(
         agent=assistant,
         room=ctx.room,
-        capture_run=False,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
         ),
