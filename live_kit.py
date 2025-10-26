@@ -9,6 +9,7 @@ from livekit.agents import (
     JobProcess,
     MetricsCollectedEvent,
     RoomInputOptions,
+    RoomOutputOptions,
     WorkerOptions,
     cli,
     metrics,
@@ -122,27 +123,35 @@ async def entrypoint(ctx: JobContext, vital_summary: str = None):
     await session.start(
         agent=assistant,
         room=ctx.room,
+        capture_run=False,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
+
         ),
+        room_output_options=RoomOutputOptions(
+            audio_enabled= False,
+        )
     )
 
     await session.generate_reply(
-        instructions="Greet the user and introduce yourself as Halo, the baby monitoring system. Report the current vital signs status."
+        instructions="Greet the user and introduce yourself as Halo, the baby monitoring system. Report the current vital signs status.",
+        allow_interruptions=False,
     )
 
     await ctx.connect()
-    try:
-        while True:
-            await asyncio.sleep(1)
-    except Exception:
-        logger.info("Exception raised, ending monitoring session")
-    finally:
-        logger.info("Ending monitoring session")
+    ctx.shutdown()
+    
+    # try:
+    #     while True:
+    #         await asyncio.sleep(1)
+    # except Exception:
+    #     logger.info("Exception raised, ending monitoring session")
+    # finally:
+    #     logger.info("Ending monitoring session")
 
 
-if __name__ == "__main__":
-    sample_vital_summary = "Heart rate: 120-140 bpm (normal range), Breathing: 30-40 breaths/min (normal), Sleep pattern: Regular REM cycles detected, Movement: Minimal activity during sleep phase, Alert: No abnormalities detected in last 2 hours"
+# if __name__ == "__main__":
+def call_live_kit(message):
     async def entrypoint_with_sample(ctx: JobContext):
-        return await entrypoint(ctx, sample_vital_summary)
+        return await entrypoint(ctx, message)
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint_with_sample, prewarm_fnc=prewarm))

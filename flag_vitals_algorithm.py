@@ -35,7 +35,8 @@ def query_vital_signs_data():
     return df.tail(10)
 
 
-def flag_vitals(df: pd.DataFrame) -> bool:
+def flag_vitals() -> bool:
+    df = query_vital_signs_data()
     if TIME_COL in df.columns:
         df[TIME_COL] = pd.to_datetime(df[TIME_COL])
         df = df.sort_values(TIME_COL).reset_index(drop=True)
@@ -65,15 +66,14 @@ def flag_vitals(df: pd.DataFrame) -> bool:
             out_of_range_count = 0
         
         if out_of_range_count > 2:
-            return abnormal_stats 
-    return None
+            return True
+    return False
     
 
 
 
 
 if __name__ == "__main__":
-    last10 = query_vital_signs_data()
-    flagged_stats = flag_vitals(last10)
+    flagged_stats = flag_vitals()
     print(flagged_stats)
     
