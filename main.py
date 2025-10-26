@@ -30,8 +30,8 @@ class BreathingMonitorResearch:
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
             model_complexity=2,
-            min_detection_confidence=0.7,
-            min_tracking_confidence=0.7,
+            min_detection_confidence=0.5,  # Lowered from 0.7 for better detection
+            min_tracking_confidence=0.5,   # Lowered from 0.7 for better tracking
             smooth_landmarks=True,
             enable_segmentation=True
         )
@@ -39,8 +39,8 @@ class BreathingMonitorResearch:
         self.face_mesh = self.mp_face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
-            min_detection_confidence=0.7,
-            min_tracking_confidence=0.7,
+            min_detection_confidence=0.5,  # Lowered from 0.7 for better detection
+            min_tracking_confidence=0.5,   # Lowered from 0.7 for better tracking
             refine_landmarks=True
         )
         
@@ -60,6 +60,8 @@ class BreathingMonitorResearch:
         self.points_initialized = False
         self.tracking_points = []
         self.current_person_bbox = None
+        self.last_valid_landmarks = None  # Store last good landmarks
+        self.frames_since_detection = 0   # Track frames without detection
         
         self.signal_history = {
             'chest': {'B': deque(maxlen=self.window_size), 'G': deque(maxlen=self.window_size), 'R': deque(maxlen=self.window_size)},
@@ -75,6 +77,8 @@ class BreathingMonitorResearch:
         
         self.breathing_rate = 0
         self.heart_rate = 0
+        self.avg_breathing_rate = 0
+        self.avg_heart_rate = 0
         self.confidence = 0
         self.hr_confidence = 0
         self.fps = 30
@@ -544,11 +548,15 @@ class BreathingMonitorResearch:
                 rates = list(self.breathing_rate_history)
                 self.line1.set_data(times, rates)
                 self.ax1.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
+            else:
+                self.line1.set_data([], [])
             
             if len(self.heart_rate_history) > 0:
                 hr_rates = list(self.heart_rate_history)
                 self.line2.set_data(times, hr_rates)
                 self.ax2.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
+            else:
+                self.line2.set_data([], [])
             
             if len(self.signal_history['chest']['G']) > 10:
                 chest_sig = np.array(list(self.signal_history['chest']['G']))
@@ -597,12 +605,28 @@ class BreathingMonitorResearch:
                 max_val = max(max_vals) if max_vals else 1
                 max_val = max(max_val, 1)
                 self.ax3.set_ylim(-max_val * 1.5, max_val * 1.5)
+            else:
+                # Clear signal quality lines when there's not enough data
+                self.line3_chest.set_data([], [])
+                self.line3_abdomen.set_data([], [])
+                self.line3_nose.set_data([], [])
+                self.line3_control.set_data([], [])
             
             breathing_conf_history = [self.confidence] * len(times)
             heart_conf_history = [self.hr_confidence] * len(times)
             self.line4_breathing.set_data(times, breathing_conf_history)
             self.line4_heart.set_data(times, heart_conf_history)
             self.ax4.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
+        else:
+            # Clear all plot lines when there's no time history
+            self.line1.set_data([], [])
+            self.line2.set_data([], [])
+            self.line3_chest.set_data([], [])
+            self.line3_abdomen.set_data([], [])
+            self.line3_nose.set_data([], [])
+            self.line3_control.set_data([], [])
+            self.line4_breathing.set_data([], [])
+            self.line4_heart.set_data([], [])
         
         self.canvas.draw()
         
@@ -612,7 +636,7 @@ class BreathingMonitorResearch:
         
         return plot_image
     
-    def process_frame(self, frame):
+    def process_frame(self, frame, text_scale=1.0):
         # Store original frame dimensions for drawing and landmark scaling
         h, w = frame.shape[:2]
         original_h, original_w = h, w
@@ -628,6 +652,9 @@ class BreathingMonitorResearch:
         self.frames_processed += 1
         
         if results.pose_landmarks:
+            self.frames_since_detection = 0  # Reset counter
+            self.last_valid_landmarks = results.pose_landmarks  # Store good landmarks
+            
             landmarks = results.pose_landmarks.landmark
             xs = [lm.x * w for lm in landmarks if lm.visibility > 0.5]
             ys = [lm.y * h for lm in landmarks if lm.visibility > 0.5]
@@ -637,9 +664,10 @@ class BreathingMonitorResearch:
                 person_height = max(ys) - min(ys)
                 person_size = person_width * person_height
                 
-                if person_size > self.primary_person_size * 0.8:
+                # More lenient size filtering (30% instead of 50%)
+                if person_size > self.primary_person_size * 0.7:
                     self.primary_person_size = max(person_size, self.primary_person_size)
-                elif person_size < self.primary_person_size * 0.5:
+                elif person_size < self.primary_person_size * 0.3:
                     return frame
             
             self.mp_drawing.draw_landmarks(
@@ -653,7 +681,29 @@ class BreathingMonitorResearch:
             )
             
             self.initialize_tracking_points(landmarks, frame.shape)
+        
+        # Use last valid landmarks if detection temporarily failed (up to 10 frames)
+        elif self.last_valid_landmarks and self.frames_since_detection < 10:
+            self.frames_since_detection += 1
             
+            # Draw with last known good landmarks but with reduced opacity (yellow color)
+            self.mp_drawing.draw_landmarks(
+                frame,
+                self.last_valid_landmarks,
+                self.mp_pose.POSE_CONNECTIONS,
+                landmark_drawing_spec=self.mp_drawing.DrawingSpec(
+                    color=(0, 255, 255), thickness=2, circle_radius=2),  # Yellow to indicate cached
+                connection_drawing_spec=self.mp_drawing.DrawingSpec(
+                    color=(128, 128, 128), thickness=1)  # Dimmed connections
+            )
+            
+            # Use cached landmarks for tracking points
+            landmarks = self.last_valid_landmarks.landmark
+            if not self.points_initialized or self.tracking_points:
+                self.initialize_tracking_points(landmarks, frame.shape)
+        
+        # Only process tracking points if we have them (from current or cached detection)
+        if self.points_initialized and self.tracking_points:
             for region_name, point in self.tracking_points.items():
                 signals = self.extract_region_signal(frame, point)
                 if signals:
@@ -687,67 +737,89 @@ class BreathingMonitorResearch:
                     quality = self.landmark_quality[region_name]
                     label += f" ({quality:.0%})"
                 
-                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                label_pos = (point[0] + 15, point[1] + 5)
+                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, max(1, int(2 * text_scale)))[0]
+                label_pos = (point[0] + int(15 * text_scale), point[1] + int(5 * text_scale))
                 cv2.rectangle(frame,
-                             (label_pos[0] - 2, label_pos[1] - label_size[1] - 2),
-                             (label_pos[0] + label_size[0] + 2, label_pos[1] + 2),
+                             (label_pos[0] - int(2 * text_scale), label_pos[1] - label_size[1] - int(2 * text_scale)),
+                             (label_pos[0] + label_size[0] + int(2 * text_scale), label_pos[1] + int(2 * text_scale)),
                              (0, 0, 0), -1)
                 cv2.putText(frame, label, label_pos, 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, color, max(1, int(2 * text_scale)))
             
-            # Always estimate rates (no stabilization delay)
+            # Always estimate rates when we have tracking points
             self.breathing_rate, self.confidence = self.estimate_breathing_rate()
             self.heart_rate, self.hr_confidence = self.estimate_heart_rate()
+            
+            # Add tracking status indicator if using cached landmarks
+            if self.frames_since_detection > 0:
+                status_text = f"TRACKING (cached {self.frames_since_detection}f)"
+                cv2.putText(frame, status_text, (int(10 * text_scale), int(30 * text_scale)),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, (0, 255, 255), max(1, int(2 * text_scale)))
             
         self.breathing_rate_history.append(self.breathing_rate)
         self.heart_rate_history.append(self.heart_rate)
         self.time_history.append(current_time)
         
-        ranges = self.get_normal_ranges()
+        # Calculate average breathing rate (last 10 seconds sliding window)
+        if len(self.time_history) > 0:
+            cutoff_time = current_time - 10.0  # 10 seconds ago
+            br_values = []
+            time_list = list(self.time_history)
+            br_list = list(self.breathing_rate_history)
+            
+            for i in range(len(time_list)):
+                if time_list[i] >= cutoff_time:
+                    br_values.append(br_list[i])
+            
+            if len(br_values) > 0:
+                self.avg_breathing_rate = sum(br_values) / len(br_values)
+            else:
+                self.avg_breathing_rate = self.breathing_rate
+        else:
+            self.avg_breathing_rate = 0
         
-        # Determine breathing rate status
-        status_text = "NORMAL"
-        text_color = (0, 255, 0)
+        # Calculate average heart rate (last 10 seconds sliding window)
+        if len(self.time_history) > 0:
+            cutoff_time = current_time - 10.0  # 10 seconds ago
+            hr_values = []
+            time_list = list(self.time_history)
+            hr_list = list(self.heart_rate_history)
+            
+            for i in range(len(time_list)):
+                if time_list[i] >= cutoff_time:
+                    hr_values.append(hr_list[i])
+            
+            if len(hr_values) > 0:
+                self.avg_heart_rate = sum(hr_values) / len(hr_values)
+            else:
+                self.avg_heart_rate = self.heart_rate
+        else:
+            self.avg_heart_rate = 0
         
-        if self.breathing_rate < ranges['br_low'] and self.breathing_rate > 0:
-            status_text = "LOW"
-            text_color = (0, 0, 255)
-        elif self.breathing_rate > ranges['br_high']:
-            status_text = "HIGH"
-            text_color = (0, 0, 255)
+        # Calculate text positions for top right alignment
+        margin = int(10 * text_scale)
         
-        rate_text = f"Breathing: {self.breathing_rate:.1f} BPM -- {status_text}"
-        normal_range = f"(Normal: {ranges['br_normal'][0]}-{ranges['br_normal'][1]})"
-        cv2.putText(frame, rate_text, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
-        cv2.putText(frame, normal_range, (10, 55),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        rate_text = f"Breathing: {self.breathing_rate:.0f} BPM (Avg: {self.avg_breathing_rate:.0f})"
+        rate_text_size = cv2.getTextSize(rate_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8 * text_scale, max(1, int(2 * text_scale)))[0]
+        rate_text_x = w - rate_text_size[0] - margin
+        cv2.putText(frame, rate_text, (rate_text_x, int(30 * text_scale)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8 * text_scale, (0, 255, 255), max(1, int(2 * text_scale)))
         
-        # Determine heart rate status
-        hr_status = "NORMAL"
-        hr_color = (0, 255, 0)
-        
-        if self.heart_rate < ranges['hr_low'] and self.heart_rate > 0:
-            hr_status = "LOW"
-            hr_color = (0, 0, 255)
-        elif self.heart_rate > ranges['hr_high']:
-            hr_status = "HIGH"
-            hr_color = (0, 0, 255)
-        
-        hr_text = f"Heart Rate: {self.heart_rate:.0f} BPM -- {hr_status}"
-        hr_normal_range = f"(Normal: {ranges['hr_normal'][0]}-{ranges['hr_normal'][1]})"
-        cv2.putText(frame, hr_text, (10, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, hr_color, 2)
-        cv2.putText(frame, hr_normal_range, (10, 110),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        hr_text = f"Heart Rate: {self.heart_rate:.0f} BPM (Avg: {self.avg_heart_rate:.0f})"
+        hr_text_size = cv2.getTextSize(hr_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8 * text_scale, max(1, int(2 * text_scale)))[0]
+        hr_text_x = w - hr_text_size[0] - margin
+        cv2.putText(frame, hr_text, (hr_text_x, int(60 * text_scale)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8 * text_scale, (0, 0, 255), max(1, int(2 * text_scale)))
         
         conf_text = f"BR Conf: {self.confidence:.0f}%  |  HR Conf: {self.hr_confidence:.0f}%"
-        cv2.putText(frame, conf_text, (10, 140),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        conf_text_size = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6 * text_scale, max(1, int(2 * text_scale)))[0]
+        conf_text_x = w - conf_text_size[0] - margin
+        cv2.putText(frame, conf_text, (conf_text_x, int(90 * text_scale)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6 * text_scale, (255, 255, 255), max(1, int(2 * text_scale)))
         
-        cv2.putText(frame, "Research: Breathing + rPPG Heart Rate | Auto Age Detection", (10, h - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+        cv2.putText(frame, "Research: Breathing + rPPG Heart Rate | Auto Age Detection", 
+                    (int(10 * text_scale), h - int(20 * text_scale)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, (255, 255, 0), max(1, int(1 * text_scale)))
         
         return frame
 
@@ -783,6 +855,10 @@ def main():
     use_webcam = True
     video_path = '/Users/aidenm/Testch/test_videos/002.mp4'
     
+    # Base dimensions for scaling calculations
+    BASE_WIDTH = 1920
+    BASE_HEIGHT = 1080
+    
     def get_capture(use_webcam):
         if use_webcam:
             cap = cv2.VideoCapture(0)
@@ -792,6 +868,12 @@ def main():
         else:
             cap = cv2.VideoCapture(video_path)
         return cap
+    
+    def get_scale_factor(img_width, img_height):
+        """Calculate scale factor based on current image size vs base size."""
+        scale_w = img_width / BASE_WIDTH
+        scale_h = img_height / BASE_HEIGHT
+        return min(scale_w, scale_h)
     
     cap = get_capture(use_webcam)
     if not cap.isOpened():
@@ -816,7 +898,9 @@ def main():
             if use_webcam:
                 frame = cv2.flip(frame, 1)
             
-            processed_frame = monitor.process_frame(frame)
+            # Calculate text scale based on target display size
+            display_scale = get_scale_factor(1920, 1080)
+            processed_frame = monitor.process_frame(frame, text_scale=display_scale)
             plot_image = monitor.update_plot()
             
             # Resize with aspect ratio preserved and centered
@@ -824,36 +908,48 @@ def main():
             display_plot = resize_with_aspect_ratio(plot_image, 960, 1080)
             combined = cv2.hconcat([display_frame, display_plot])
             
+            # Calculate scale factor for text based on combined image size
+            scale = get_scale_factor(combined.shape[1], combined.shape[0])
+            
             source_text = "SOURCE: WEBCAM" if use_webcam else "SOURCE: VIDEO FILE"
             source_color = (0, 255, 255) if use_webcam else (255, 0, 255)
-            cv2.putText(combined, source_text, (20, combined.shape[0] - 60),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1.2, source_color, 3)
+            cv2.putText(combined, source_text, 
+                       (int(20 * scale), combined.shape[0] - int(60 * scale)),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.2 * scale, source_color, max(1, int(3 * scale)))
             
-            controls_text = "Controls: [T] Toggle Source | [SPACE] Pause | [S] Screenshot | [Q] Quit"
-            cv2.putText(combined, controls_text, (20, combined.shape[0] - 20),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            controls_text = "Controls: [T] Toggle Source | [SPACE] Pause | [S] Screenshot | [Q/ESC] Quit"
+            cv2.putText(combined, controls_text, 
+                       (int(20 * scale), combined.shape[0] - int(20 * scale)),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6 * scale, (255, 255, 255), max(1, int(2 * scale)))
         
         # Always update the display (even when paused)
         if combined is not None:
             # Add PAUSED indicator when paused
             display_combined = combined.copy()
+            scale = get_scale_factor(display_combined.shape[1], display_combined.shape[0])
             if paused:
-                cv2.putText(display_combined, "PAUSED", (display_combined.shape[1]//2 - 100, 60),
-                           cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 255), 4)
+                cv2.putText(display_combined, "PAUSED", 
+                           (display_combined.shape[1]//2 - int(100 * scale), int(60 * scale)),
+                           cv2.FONT_HERSHEY_SIMPLEX, 2.0 * scale, (0, 0, 255), max(1, int(4 * scale)))
             cv2.imshow('Vital Signs Monitor', display_combined)
+        
+        # Check if window was closed
+        if cv2.getWindowProperty('Vital Signs Monitor', cv2.WND_PROP_VISIBLE) < 1:
+            break
         
         key = cv2.waitKey(1) & 0xFF
         
-        if key == ord('q'):
+        # Multiple quit options: q, Q, ESC
+        if key == ord('q') or key == ord('Q') or key == 27:
             break
-        elif key == ord('t'):
+        elif key == ord('t') or key == ord('T'):
             use_webcam = not use_webcam
             cap.release()
             cap = get_capture(use_webcam)
             monitor.reset_data()  # Reset data buffers, models stay initialized
         elif key == ord(' '):
             paused = not paused
-        elif key == ord('s'):
+        elif key == ord('s') or key == ord('S'):
             if combined is not None:
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 cv2.imwrite(f'screenshot_{timestamp}.png', combined)
