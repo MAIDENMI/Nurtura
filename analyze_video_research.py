@@ -92,7 +92,7 @@ class SnowflakeLogger:
 
 
 def main():
-    video_path = '/Users/aidenm/Testch/test_videos/002.mp4'
+    video_path = 'test_videos/002.mp4'
     monitor = BreathingMonitorResearch()
     db_logger = SnowflakeLogger()
     
