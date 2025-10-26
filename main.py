@@ -48,17 +48,17 @@ def start_vitals_monitoring(monitor):
 class BreathingMonitorResearch:
     def __init__(self, window_size=150, block_size=50, hr_window_size=210, processing_size=(640, 480)):
         self.mp_pose = mp.solutions.pose
-
         self.mp_drawing = mp.solutions.drawing_utils
         
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
             model_complexity=2,
-            min_detection_confidence=0.7,
-            min_tracking_confidence=0.7,
+            min_detection_confidence=0.3,
+            min_tracking_confidence=0.3,
             smooth_landmarks=True,
             enable_segmentation=True
         )
+        
         
         self.window_size = window_size
         self.hr_window_size = hr_window_size
@@ -104,10 +104,6 @@ class BreathingMonitorResearch:
         self.age_category = "adult"
         self.body_size_cm = 0
         self.detection_confidence = 0
-        
-        # Reset adaptive_block_size so it's recalculated for new source
-        if hasattr(self, 'adaptive_block_size'):
-            delattr(self, 'adaptive_block_size')
         
         self.breathing_rate_history = deque(maxlen=self.window_size)
         self.heart_rate_history = deque(maxlen=self.window_size)
@@ -603,32 +599,16 @@ class BreathingMonitorResearch:
                 else:
                     control_norm = control_sig
                 
-                # Use the actual length of the signals and align with recent times
-                # Take the most recent signal values and align with recent time values
-                signal_len = len(chest_sig)
-                if len(times) >= signal_len:
-                    # Take the most recent signal_len elements from times
-                    plot_times = times[-signal_len:]
-                else:
-                    # If times is shorter (shouldn't happen), just use all of it
-                    plot_times = times
-                
                 if len(chest_norm) > 0:
-                    self.line3_chest.set_data(plot_times, chest_norm)
+                    self.line3_chest.set_data(times[:len(chest_norm)], chest_norm)
                 if len(abdomen_norm) > 0:
-                    self.line3_abdomen.set_data(plot_times, abdomen_norm)
+                    self.line3_abdomen.set_data(times[:len(abdomen_norm)], abdomen_norm)
                 if len(nose_norm) > 0:
-                    self.line3_nose.set_data(plot_times, nose_norm)
+                    self.line3_nose.set_data(times[:len(nose_norm)], nose_norm)
                 if len(control_norm) > 0:
-                    self.line3_control.set_data(plot_times, control_norm)
+                    self.line3_control.set_data(times[:len(control_norm)], control_norm)
                 
-                # Set x-axis limits based on the actual plot data, not the full time history
-                if len(plot_times) > 0:
-                    x_min = max(0, plot_times[0])
-                    x_max = plot_times[-1] + 1
-                    self.ax3.set_xlim(x_min, x_max)
-                else:
-                    self.ax3.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
+                self.ax3.set_xlim(max(0, times[-1] - 30), times[-1] + 1)
                 
                 max_vals = []
                 if len(chest_norm) > 0:
@@ -671,7 +651,7 @@ class BreathingMonitorResearch:
         
         return plot_image
     
-    def process_frame(self, frame):
+    def process_frame(self, frame, text_scale=1.0):
         self.recent_frames.append(frame.copy())
         h, w = frame.shape[:2]
         original_h, original_w = h, w
@@ -682,8 +662,9 @@ class BreathingMonitorResearch:
         
         rgb_frame = cv2.cvtColor(processing_frame, cv2.COLOR_BGR2RGB)
         
-        # Process pose
+        # Process both pose and face mesh
         pose_results = self.pose.process(rgb_frame)
+
         
         current_time = time.time() - self.start_time
         
@@ -697,10 +678,8 @@ class BreathingMonitorResearch:
             self.last_valid_landmarks = pose_results.pose_landmarks  # Store good landmarks
             
             landmarks = pose_results.pose_landmarks.landmark
-            # Scale landmarks from processing_frame coords (640x480) to original frame coords
-            processing_w, processing_h = self.processing_size
-            xs = [lm.x * processing_w for lm in landmarks if lm.visibility > 0.5]
-            ys = [lm.y * processing_h for lm in landmarks if lm.visibility > 0.5]
+            xs = [lm.x * w for lm in landmarks if lm.visibility > 0.5]
+            ys = [lm.y * h for lm in landmarks if lm.visibility > 0.5]
             
             if xs and ys:
                 person_width = max(xs) - min(xs)
@@ -723,26 +702,7 @@ class BreathingMonitorResearch:
                     color=(255, 255, 255), thickness=2)
             )
             
-            # Initialize tracking points using processing_frame dimensions
-            self.initialize_tracking_points(landmarks, processing_frame.shape)
-            
-            # Scale tracking points from processing frame to original frame
-            if self.tracking_points:
-                scale_x = w / self.processing_size[0]
-                scale_y = h / self.processing_size[1]
-                
-                for region in self.tracking_points:
-                    x, y = self.tracking_points[region]
-                    self.tracking_points[region] = (
-                        int(x * scale_x),
-                        int(y * scale_y)
-                    )
-                
-                # Also scale adaptive_block_size if it exists
-                # Use geometric mean to preserve aspect ratio
-                if hasattr(self, 'adaptive_block_size'):
-                    avg_scale = (scale_x + scale_y) / 2  # Use average to handle different aspect ratios
-                    self.adaptive_block_size = int(self.adaptive_block_size * avg_scale)
+            self.initialize_tracking_points(landmarks, frame.shape)
         
         # Use last valid landmarks if detection temporarily failed (extended to 30 frames)
         elif self.last_valid_landmarks and self.frames_since_detection < 30:
@@ -763,26 +723,7 @@ class BreathingMonitorResearch:
             # Use cached landmarks for tracking points - only reinitialize if needed
             landmarks = self.last_valid_landmarks.landmark
             if not self.points_initialized or not self.tracking_points:
-                # Initialize tracking points using processing_frame dimensions
-                self.initialize_tracking_points(landmarks, processing_frame.shape)
-                
-                # Scale tracking points from processing frame to original frame
-                if self.tracking_points:
-                    scale_x = w / self.processing_size[0]
-                    scale_y = h / self.processing_size[1]
-                    
-                    for region in self.tracking_points:
-                        x, y = self.tracking_points[region]
-                        self.tracking_points[region] = (
-                            int(x * scale_x),
-                            int(y * scale_y)
-                        )
-                    
-                    # Also scale adaptive_block_size if it exists
-                    # Use average to handle different aspect ratios  
-                    if hasattr(self, 'adaptive_block_size'):
-                        avg_scale = (scale_x + scale_y) / 2
-                        self.adaptive_block_size = int(self.adaptive_block_size * avg_scale)
+                self.initialize_tracking_points(landmarks, frame.shape)
         else:
             # Detection completely lost - clear tracking state
             if self.last_valid_landmarks is not None:
@@ -825,14 +766,14 @@ class BreathingMonitorResearch:
                     quality = self.landmark_quality[region_name]
                     label += f" ({quality:.0%})"
                 
-                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                label_pos = (point[0] + 15, point[1] + 5)
+                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, max(1, int(2 * text_scale)))[0]
+                label_pos = (point[0] + int(15 * text_scale), point[1] + int(5 * text_scale))
                 cv2.rectangle(frame,
-                             (label_pos[0] - 2, label_pos[1] - label_size[1] - 2),
-                             (label_pos[0] + label_size[0] + 2, label_pos[1] + 2),
+                             (label_pos[0] - int(2 * text_scale), label_pos[1] - label_size[1] - int(2 * text_scale)),
+                             (label_pos[0] + label_size[0] + int(2 * text_scale), label_pos[1] + int(2 * text_scale)),
                              (0, 0, 0), -1)
                 cv2.putText(frame, label, label_pos, 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, color, max(1, int(2 * text_scale)))
             
             # Always estimate rates when we have tracking points
             self.breathing_rate, self.confidence = self.estimate_breathing_rate()
@@ -848,8 +789,8 @@ class BreathingMonitorResearch:
                 else:
                     color = (0, 128, 255)  # Orange - critical
                 status_text = f"TRACKING (cached {self.frames_since_detection}/30f)"
-                cv2.putText(frame, status_text, (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                cv2.putText(frame, status_text, (int(10 * text_scale), int(30 * text_scale)),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, color, max(1, int(2 * text_scale)))
             
         self.breathing_rate_history.append(self.breathing_rate)
         self.heart_rate_history.append(self.heart_rate)
@@ -891,38 +832,43 @@ class BreathingMonitorResearch:
         else:
             self.avg_heart_rate = 0
         
-        # Calculate text positions for top right alignment
-        margin = 10
-        
-        rate_text = f"Breathing: {self.breathing_rate:.0f} BPM (Avg: {self.avg_breathing_rate:.0f})"
-        rate_text_size = cv2.getTextSize(rate_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
-        rate_text_x = w - rate_text_size[0] - margin
-        cv2.putText(frame, rate_text, (rate_text_x, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-        
-        hr_text = f"Heart Rate: {self.heart_rate:.0f} BPM (Avg: {self.avg_heart_rate:.0f})"
-        hr_text_size = cv2.getTextSize(hr_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
-        hr_text_x = w - hr_text_size[0] - margin
-        cv2.putText(frame, hr_text, (hr_text_x, 55),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-        
-        conf_text = f"BR Conf: {self.confidence:.0f}%  |  HR Conf: {self.hr_confidence:.0f}%"
-        conf_text_size = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-        conf_text_x = w - conf_text_size[0] - margin
-        cv2.putText(frame, conf_text, (conf_text_x, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        cv2.putText(frame, "Research: Breathing + rPPG Heart Rate | Auto Age Detection", 
-                    (10, h - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-        
         return frame
+
+def resize_with_aspect_ratio(image, target_width, target_height, bg_color=(0, 0, 0)):
+    """Resize image to fit within target dimensions while maintaining aspect ratio."""
+    h, w = image.shape[:2]
+    
+    # Calculate scaling factor to fit within target dimensions
+    scale = min(target_width / w, target_height / h)
+    
+    # Calculate new dimensions
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    
+    # Resize image with aspect ratio preserved
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    
+    # Create canvas with target dimensions
+    canvas = np.full((target_height, target_width, 3), bg_color, dtype=np.uint8)
+    
+    # Calculate centering position
+    y_offset = (target_height - new_h) // 2
+    x_offset = (target_width - new_w) // 2
+    
+    # Place resized image on canvas
+    canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+    
+    return canvas
 
 def main():
     monitor = BreathingMonitorResearch()
     # vitals_thread, stop_event = start_vitals_monitoring(monitor)
-    use_webcam = False
-    video_path = 'test_videos/001.mp4'
+    use_webcam = True
+    video_path = 'test_videos/002.mp4'
+    
+    # Base dimensions for scaling calculations
+    BASE_WIDTH = 1920
+    BASE_HEIGHT = 1080
     
     def get_capture(use_webcam):
         if use_webcam:
@@ -934,21 +880,18 @@ def main():
             cap = cv2.VideoCapture(video_path)
         return cap
     
+    def get_scale_factor(img_width, img_height):
+        """Calculate scale factor based on current image size vs base size."""
+        scale_w = img_width / BASE_WIDTH
+        scale_h = img_height / BASE_HEIGHT
+        return min(scale_w, scale_h)
+    
     cap = get_capture(use_webcam)
     if not cap.isOpened():
         return
     
-    cv2.namedWindow('Video Feed', cv2.WINDOW_NORMAL)
-    cv2.namedWindow('Vital Signs Graphs', cv2.WINDOW_NORMAL)
-    
-    # Set initial window sizes based on video dimensions
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    display_width = min(width, 1280) if not use_webcam else 800
-    display_height = min(height, 960) if not use_webcam else 600
-    
-    cv2.resizeWindow('Video Feed', display_width, display_height)
-    cv2.resizeWindow('Vital Signs Graphs', 1000, 750)
+    cv2.namedWindow('Vital Signs Monitor', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Vital Signs Monitor', 1920, 1080)
     
     paused = False
     combined = None
@@ -966,38 +909,55 @@ def main():
             if use_webcam:
                 frame = cv2.flip(frame, 1)
             
-            processed_frame = monitor.process_frame(frame)
+            # Calculate text scale based on target display size
+            display_scale = get_scale_factor(1920, 1080)
+            processed_frame = monitor.process_frame(frame, text_scale=display_scale)
             plot_image = monitor.update_plot()
             
-            # Add source indicator to processed frame
+            # Resize with aspect ratio preserved and centered
+            display_frame = resize_with_aspect_ratio(processed_frame, 960, 1080)
+            display_plot = resize_with_aspect_ratio(plot_image, 960, 1080)
+            combined = cv2.hconcat([display_frame, display_plot])
+            
+            # Calculate scale factor for text based on combined image size
+            scale = get_scale_factor(combined.shape[1], combined.shape[0])
+            
             source_text = "SOURCE: WEBCAM" if use_webcam else "SOURCE: VIDEO FILE"
             source_color = (0, 255, 255) if use_webcam else (255, 0, 255)
-            cv2.putText(processed_frame, source_text, 
-                       (20, processed_frame.shape[0] - 40),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, source_color, 2)
+            cv2.putText(combined, source_text, 
+                       (int(20 * scale), combined.shape[0] - int(120 * scale)),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6 * scale, source_color, max(1, int(2 * scale)))
             
-            controls_text = "Controls: [T] Toggle | [SPACE] Pause | [S] Screenshot | [Q/ESC] Quit"
-            cv2.putText(processed_frame, controls_text, 
-                       (20, processed_frame.shape[0] - 15),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            # Add vital signs information
+            breathing_text = f"Breathing: {monitor.breathing_rate:.0f} BPM (Avg: {monitor.avg_breathing_rate:.0f})"
+            cv2.putText(combined, breathing_text, 
+                       (int(20 * scale), combined.shape[0] - int(90 * scale)),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6 * scale, (0, 255, 255), max(1, int(2 * scale)))
             
-            # Display in two separate windows
-            display_frame = processed_frame.copy()
-            display_plot = plot_image.copy()
+            hr_text = f"Heart Rate: {monitor.heart_rate:.0f} BPM (Avg: {monitor.avg_heart_rate:.0f})"
+            cv2.putText(combined, hr_text, 
+                       (int(20 * scale), combined.shape[0] - int(60 * scale)),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6 * scale, (0, 0, 255), max(1, int(2 * scale)))
             
-            if paused:
-                cv2.putText(display_frame, "PAUSED", 
-                           (display_frame.shape[1]//2 - 80, 40),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+            conf_text = f"BR Conf: {monitor.confidence:.0f}%  |  HR Conf: {monitor.hr_confidence:.0f}%"
+            cv2.putText(combined, conf_text, 
+                       (int(20 * scale), combined.shape[0] - int(30 * scale)),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6 * scale, (255, 255, 255), max(1, int(2 * scale)))
             
-            cv2.imshow('Video Feed', display_frame)
-            cv2.imshow('Vital Signs Graphs', display_plot)
-            
-            combined = display_frame  # Keep for screenshot functionality
         
-        # Check if windows were closed
-        if cv2.getWindowProperty('Video Feed', cv2.WND_PROP_VISIBLE) < 1 or \
-           cv2.getWindowProperty('Vital Signs Graphs', cv2.WND_PROP_VISIBLE) < 1:
+        # Always update the display (even when paused)
+        if combined is not None:
+            # Add PAUSED indicator when paused
+            display_combined = combined.copy()
+            scale = get_scale_factor(display_combined.shape[1], display_combined.shape[0])
+            if paused:
+                cv2.putText(display_combined, "PAUSED", 
+                           (display_combined.shape[1]//2 - int(100 * scale), int(60 * scale)),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.5 * scale, (0, 0, 255), max(1, int(3 * scale)))
+            cv2.imshow('Vital Signs Monitor', display_combined)
+        
+        # Check if window was closed
+        if cv2.getWindowProperty('Vital Signs Monitor', cv2.WND_PROP_VISIBLE) < 1:
             break
         
         key = cv2.waitKey(1) & 0xFF
@@ -1009,16 +969,6 @@ def main():
             use_webcam = not use_webcam
             cap.release()
             cap = get_capture(use_webcam)
-            
-            # Resize windows based on video dimensions
-            if not use_webcam and cap.isOpened():
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                # Clamp to reasonable display sizes
-                display_width = min(width, 1280)
-                display_height = min(height, 960)
-                cv2.resizeWindow('Video Feed', display_width, display_height)
-            
             monitor.reset_data()
             if hasattr(monitor, 'recent_frames'):
                 monitor.recent_frames.clear()  # Reset data buffers, models stay initialized
