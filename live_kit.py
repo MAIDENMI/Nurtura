@@ -78,7 +78,7 @@ async def entrypoint(ctx: JobContext, vital_summary: str = None, video_frames: l
         tts="cartesia/sonic-2:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        user_away_timeout=0,
+        user_away_timeout=0.0,
     )
 
     usage_collector = metrics.UsageCollector()
@@ -118,26 +118,19 @@ async def entrypoint(ctx: JobContext, vital_summary: str = None, video_frames: l
             content=content_items
         )
         assistant.update_chat_ctx(initial_ctx)
-
-    await session.start(
-        agent=assistant,
-        room=ctx.room,
-        room_input_options=RoomInputOptions(
-            noise_cancellation=noise_cancellation.BVC(),
-        ),
-        room_output_options=RoomOutputOptions(
-            audio_enabled=False,
+        await session.start(
+            agent=assistant,
+            room=ctx.room,
+            room_input_options=RoomInputOptions(
+                noise_cancellation=noise_cancellation.BVC(),
+            ),
         )
-    )
-    
-    await ctx.connect()
-    
-    session.generate_reply(
-        instructions="Analyze the vital signs summary and video frames if provided. If there are any abnormalities or concerns, report them briefly and clinically. If everything is normal, remain silent and generate no audio output.",
-        allow_interruptions=False,
-    )
-    print("Session generated reply")
-    
+        await session.generate_reply(
+            instructions="Analyze the vital signs summary and video frames if provided. If there are any abnormalities or concerns, report them briefly and clinically. If everything is normal, remain silent and generate no audio output.",
+            allow_interruptions=False,
+        )
+        ctx.shutdown()
+        print("Session generated reply")
 
 
 def call_live_kit(message, video_frames=None):

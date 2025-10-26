@@ -865,8 +865,8 @@ def main():
     use_webcam = False
     monitor = BreathingMonitorResearch()
     vitals_thread, stop_event = start_vitals_monitoring(monitor, use_webcam)
-    video_path = 'test_videos/001.mp4'
-    # video_path = 'test_videos/006.mp4'
+    # video_path = 'test_videos/001.mp4'
+    video_path = 'test_videos/006.mp4'
     
     # Base dimensions for scaling calculations
     BASE_WIDTH = 1920
