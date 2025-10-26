@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "dotenv>=0.9.9",
+    "gradio>=3.36.1",
     "ipdb>=0.13.13",
     "ipykernel>=6.31.0",
     "livekit-agents[silero,turn-detector]<=1.2",
@@ -15,11 +16,13 @@ dependencies = [
     "numpy>=2.0.2",
     "opencv-python>=4.11.0.86",
     "pandas>=2.3.3",
+    "plotly>=6.3.1",
     "pygame>=2.6.1",
     "pyqt6>=6.10.0",
     "requests>=2.32.5",
     "scipy>=1.13.1",
     "snowflake>=1.8.0",
+    "streamlit>=1.50.0",
     "torch>=2.8.0",
     "vapi-server-sdk>=1.7.3",
 ]

@@ -5,6 +5,9 @@ numpy>=1.26.0
 mediapipe>=0.10.0
 matplotlib>=3.5.0
 scipy>=1.9.0
+streamlit>=1.28.0
+plotly>=5.17.0
+gradio>=4.0.0
 
 # Optional: For headless Raspberry Pi (use opencv-python-headless instead)
 # opencv-python-headless>=4.8.0
