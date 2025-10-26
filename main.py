@@ -24,23 +24,23 @@ def apply_bandpass_filter(data, lowcut, highcut, fs, order=5):
     y = filtfilt(b, a, data)
     return y
 
-def check_baby_vitals(stop_event, monitor):
+def check_baby_vitals(stop_event, monitor, use_webcam):
     while not stop_event.is_set():
         abnormal_stats = flag_vitals()
         print("Abnormal stats: ", abnormal_stats)
         vital_summary = "This is list of abnormal vitals for the baby: " + str(abnormal_stats) if abnormal_stats else "All vitals normal"
         video_frames = list(monitor.recent_frames) if hasattr(monitor, 'recent_frames') else []
         print("video frames: ", len(video_frames))
-        if len(video_frames) == 150:
+        if len(video_frames) >= 100 and not use_webcam:
             call_live_kit(vital_summary, video_frames=video_frames)
             print("vital summary: ", vital_summary)
         stop_event.wait(10)
 
-def start_vitals_monitoring(monitor):
+def start_vitals_monitoring(monitor, use_webcam):
     stop_event = threading.Event()
     vitals_thread = threading.Thread(
         target=check_baby_vitals,
-        args=[stop_event, monitor],
+        args=[stop_event, monitor, use_webcam],
         daemon=True
     )
     vitals_thread.start()
@@ -862,9 +862,9 @@ def resize_with_aspect_ratio(image, target_width, target_height, bg_color=(0, 0,
     return canvas
 
 def main():
-    monitor = BreathingMonitorResearch()
-    vitals_thread, stop_event = start_vitals_monitoring(monitor)
     use_webcam = False
+    monitor = BreathingMonitorResearch()
+    vitals_thread, stop_event = start_vitals_monitoring(monitor, use_webcam)
     video_path = 'test_videos/001.mp4'
     # video_path = 'test_videos/006.mp4'
     

@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
     AgentSession,
+    ChatContext,
     JobContext,
     JobProcess,
     MetricsCollectedEvent,
@@ -78,7 +79,6 @@ async def entrypoint(ctx: JobContext, vital_summary: str = None, video_frames: l
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         user_away_timeout=0,
-        allow_interruptions=False,
     )
 
     usage_collector = metrics.UsageCollector()
@@ -95,16 +95,6 @@ async def entrypoint(ctx: JobContext, vital_summary: str = None, video_frames: l
     ctx.add_shutdown_callback(log_usage)
 
     assistant = Assistant(vital_summary=vital_summary, video_frames=video_frames)
-    await session.start(
-        agent=assistant,
-        room=ctx.room,
-        room_input_options=RoomInputOptions(
-            noise_cancellation=noise_cancellation.BVC(),
-        ),
-        room_output_options=RoomOutputOptions(
-            audio_enabled=False,
-        )
-    )
 
     if video_frames and len(video_frames) > 0:
         content_items = ["Here are video frames from the monitoring camera (captured over 5 seconds):"]
@@ -122,15 +112,27 @@ async def entrypoint(ctx: JobContext, vital_summary: str = None, video_frames: l
                     inference_height=512
                 )
             )
-        
-        assistant.chat_ctx.add_message(
+        initial_ctx = ChatContext()
+        initial_ctx.add_message(
             role="user",
             content=content_items
         )
+        assistant.update_chat_ctx(initial_ctx)
 
+    await session.start(
+        agent=assistant,
+        room=ctx.room,
+        room_input_options=RoomInputOptions(
+            noise_cancellation=noise_cancellation.BVC(),
+        ),
+        room_output_options=RoomOutputOptions(
+            audio_enabled=False,
+        )
+    )
+    
     await ctx.connect()
     
-    await session.generate_reply(
+    session.generate_reply(
         instructions="Analyze the vital signs summary and video frames if provided. If there are any abnormalities or concerns, report them briefly and clinically. If everything is normal, remain silent and generate no audio output.",
         allow_interruptions=False,
     )

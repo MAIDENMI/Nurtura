@@ -40,7 +40,7 @@ def flag_vitals() -> bool:
     if TIME_COL in df.columns:
         df[TIME_COL] = pd.to_datetime(df[TIME_COL])
         df = df.sort_values(TIME_COL).reset_index(drop=True)
-    MAX_HR = 60
+    MAX_HR = 130
     MIN_HR = 50
     MAX_BR = 50
     MIN_BR = 8
